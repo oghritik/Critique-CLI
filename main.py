@@ -5,6 +5,7 @@ import shlex
 import readline 
 from io import StringIO
 from io import TextIOWrapper
+from n1_parser import NLPCommandParser
 
 def find_in_path(command):
     for path in os.environ.get("PATH", "").split(":"):
@@ -216,6 +217,9 @@ def cat (command, args):
         return(f"{command}: command not found")
 
 def main():
+    # Initialize NLP parser
+    nlp_parser = NLPCommandParser()
+    
     # Load $HISTFILE if set and exists, before loading other history
     histfile = os.environ.get("HISTFILE")
     if histfile and os.path.exists(histfile):
@@ -232,11 +236,20 @@ def main():
             cmd = input("$ ")
             hist.append(cmd)
             
-            command_with_args = shlex.split(cmd)
-            if not command_with_args:
-                continue
-            
-            if "|" in command_with_args:
+            # Try parsing as a natural language command first
+            parsed_command = nlp_parser.parse_command(cmd)
+            if parsed_command:
+                command, args = parsed_command
+            else:
+                # Fallback to regular command parsing
+                command_with_args = shlex.split(cmd)
+                if not command_with_args:
+                    continue
+                command = command_with_args[0]
+                args = command_with_args[1:]
+
+            # Handle pipeline commands
+            if not parsed_command and "|" in command_with_args:
                 pipeline = []
                 current_cmd = []
                 for token in command_with_args:
@@ -262,9 +275,7 @@ def main():
                         stdin = None
                     else:
                         prev_proc = processes[i-1]
-                        # If previous is a built-in wrapper, use its stdout StringIO as stdin
                         if hasattr(prev_proc, 'stdout') and isinstance(prev_proc.stdout, StringIO):
-                            # Read the content and pass via PIPE
                             prev_proc.stdout.seek(0)
                             pipe_input = prev_proc.stdout.read()
                             stdin = subprocess.PIPE
@@ -276,8 +287,6 @@ def main():
                         stdout = subprocess.PIPE
 
                     if command in commands:
-                        # For built-in commands in pipeline
-                        # Capture output in StringIO to simulate pipe
                         output_capture = StringIO()
                         if stdin is not None:
                             old_stdin = sys.stdin
@@ -295,7 +304,6 @@ def main():
                                 except Exception:
                                     pass
                         output_capture.seek(0)
-                        # Create a lightweight object to simulate subprocess with stdout attribute
                         class BuiltinProcess:
                             def __init__(self, stdout):
                                 self.stdout = stdout
@@ -305,7 +313,6 @@ def main():
                             p = subprocess.Popen([command] + args, stdin=stdin, stdout=stdout, text=True)
                             if stdin == subprocess.PIPE and 'pipe_input' in locals():
                                 p_output, p_error = p.communicate(input=pipe_input)
-                                # Do not print p_output here to avoid duplicate output
                                 processes.append(p)
                             else:
                                 processes.append(p)
@@ -313,26 +320,20 @@ def main():
                                 processes[i-1].stdout.close()
                         except FileNotFoundError:
                             print(f"{command}: command not found")
-                            # Close any previously started processes
                             for proc in processes:
                                 if hasattr(proc, 'terminate'):
                                     proc.terminate()
                             break
                 else:
-                    # Wait for last process to complete if it is a subprocess.Popen instance
                     last_proc = processes[-1]
                     if isinstance(last_proc, subprocess.Popen):
                         out, err = last_proc.communicate()
                         if out:
                             print(out, end="")
                     elif hasattr(last_proc, 'stdout') and isinstance(last_proc.stdout, StringIO):
-                        # If last is built-in, print its captured output
                         last_proc.stdout.seek(0)
                         print(last_proc.stdout.read(), end="")
                     continue
-
-            command = command_with_args[0]
-            args = command_with_args[1:]
 
             # Handle 2>> redirection (stderr)                           
             if "2>>" in args:
@@ -420,7 +421,6 @@ def main():
                         else:
                             f.write(f"{command}: command not found\n")
  
-                            
             # Handle > or 1> redirection (stdout)
             elif ">" in args or "1>" in args:
                 redirect_symbol = ">" if ">" in args else "1>"
