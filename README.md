@@ -10,6 +10,6 @@ Description: Create a CLI that monitors system resources (CPU, RAM, disk) and pr
 - Integrate Gemini CLI
 
 
--To create vene -> python -m venv (venv_name)
--To push all the libraries in requirements.txt -> pip freeze > requirements.txt
--To install all the libraries from requirement.txt -> pip install -r requirements.txt
+- To create vene -> python -m venv (venv_name)
+- To push all the libraries in requirements.txt -> pip freeze > requirements.txt
+- To install all the libraries from requirement.txt -> pip install -r requirements.txt
