@@ -8,3 +8,8 @@ Description: Build a CLI that acts as an AI assistant, answering questions and e
 - Predictive System Monitoring CLI
 Description: Create a CLI that monitors system resources (CPU, RAM, disk) and predicts usage trends using time-series forecasting. Include a GUI to display real-time metrics and predictions.
 - Integrate Gemini CLI
+
+
+To create vene -> python -m venv (venv_name)
+To push all the libraries in requirements.txt -> pip freeze > requirements.txt
+To install all the libraries from requirement.txt -> pip install -r requirements.txt
