@@ -11,6 +11,8 @@ class NLPCommandParser:
             "show me the current directory": ("pwd", []),
             "list all files": ("ls", []),
             "list files with details": ("ls", ["-l"]),
+            "show files": ("ls", []),
+            "show files running currently": ("ls", []),
             "change directory to home": ("cd", ["~"]),
             "go to directory": ("cd", None),  # Requires argument extraction
             "print text": ("echo", None),  # Requires argument extraction
