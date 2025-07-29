@@ -5,14 +5,44 @@ import shlex
 import readline 
 from io import StringIO
 from io import TextIOWrapper
-from n1_parser import NLPCommandParser
+try:
+    from n1_parser import NLPCommandParser
+    nlp_parser = NLPCommandParser()
+except ImportError:
+    print("Warning: NLP parser unavailable. Natural language commands disabled.")
+    nlp_parser = None
+from log_analyzer import LogAnalyzer
 
 def find_in_path(command):
-    for path in os.environ.get("PATH", "").split(":"):
+    default_path = "/bin:/usr/bin:/usr/local/bin"
+    if os.name == "nt":
+        default_path = r"C:\Windows\System32;C:\Windows;C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin"
+    paths = os.environ.get("PATH", default_path).split(os.pathsep)
+    for path in paths:
         full_path = os.path.join(path, command)
         if os.path.isfile(full_path) and os.access(full_path, os.X_OK):
             return full_path
+        if os.name == "nt":
+            full_path_exe = f"{full_path}.exe"
+            if os.path.isfile(full_path_exe) and os.access(full_path_exe, os.X_OK):
+                return full_path_exe
     return None
+
+def analyze_log(*args):
+    analyzer = LogAnalyzer()
+    if not args:
+        return "analyze_log: missing file operand\n"
+    use_gui = "--gui" in args
+    actual_args = [arg for arg in args if arg != "--gui"]
+    if not actual_args:
+        return "analyze_log: missing file operand\n"
+    filename = actual_args[0]
+    if not os.path.exists(filename):
+        return f"analyze_log: {filename}: No such file\n"
+    output, summary, df = analyzer.analyze_log(filename)
+    if use_gui:
+        analyzer.display_gui(filename, summary, df)
+    return output
 
 
 def cd_command(*args):
@@ -131,6 +161,7 @@ commands = {
     "pwd": pwd,
     "cd": cd_command,
     "history": history,
+    "analyze_log": analyze_log,
 }
 
 # For autocompletion
@@ -218,7 +249,19 @@ def cat (command, args):
 
 def main():
     # Initialize NLP parser
-    nlp_parser = NLPCommandParser()
+    try:
+        from n1_parser import NLPCommandParser  # Fixed typo from n1_parser
+        nlp_parser = NLPCommandParser()
+    except ImportError:
+        print("Warning: NLP parser unavailable. Natural language commands disabled.")
+        nlp_parser = None 
+
+    # Set default PATH for robust command execution
+    if not os.environ.get("PATH"):
+        default_path = "/bin:/usr/bin:/usr/local/bin"
+        if os.name == "nt":
+            default_path = r"C:\Windows\System32;C:\Windows;C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin"
+        os.environ["PATH"] = default_path
     
     # Load $HISTFILE if set and exists, before loading other history
     histfile = os.environ.get("HISTFILE")
@@ -237,16 +280,32 @@ def main():
             hist.append(cmd)
             
             # Try parsing as a natural language command first
-            parsed_command = nlp_parser.parse_command(cmd)
+            try:
+                parsed_command = nlp_parser.parse_command(cmd) if nlp_parser else None
+            except Exception as e:
+                parsed_command = None
             if parsed_command:
                 command, args = parsed_command
             else:
-                # Fallback to regular command parsing
                 command_with_args = shlex.split(cmd)
                 if not command_with_args:
                     continue
                 command = command_with_args[0]
                 args = command_with_args[1:]
+
+            # Handle Windows built-in commands
+            windows_builtins = ["dir", "copy", "del", "move"]
+            if os.name == "nt" and (command in windows_builtins or command == "ls"):
+                if command == "ls":
+                    command = "dir"  # Map ls to dir on Windows
+                try:
+                    result = subprocess.run([command] + args, shell=True, text=True, capture_output=True)
+                    print(result.stdout, end="")
+                    if result.stderr:
+                        print(result.stderr, end="")
+                except Exception as e:
+                    print(f"Error executing {command}: {e}")
+                continue
 
             # Handle pipeline commands
             if not parsed_command and "|" in command_with_args:
@@ -394,6 +453,7 @@ def main():
                             )
                         else:
                             f.write(f"{command}: command not found\n")
+
             # Handle >> or 1>> redirection (stdout)
             elif ">>" in args or "1>>" in args:
                 redirect_symbol = ">>" if ">>" in args else "1>>"
@@ -447,6 +507,7 @@ def main():
                             )
                         else:
                             f.write(f"{command}: command not found\n")
+            
 
             # Built-in commands
             elif command in commands:
