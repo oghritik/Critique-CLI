@@ -2,7 +2,11 @@ import sys
 import os
 import subprocess
 import shlex
-import readline 
+try:
+    import readline
+except ImportError:
+    import pyreadline3 as readline  # fallback for Windows
+
 from io import StringIO
 from io import TextIOWrapper
 try:
@@ -12,6 +16,7 @@ except ImportError:
     print("Warning: NLP parser unavailable. Natural language commands disabled.")
     nlp_parser = None
 from log_analyzer import LogAnalyzer
+from system_monitor import SystemMonitor
 
 def find_in_path(command):
     default_path = "/bin:/usr/bin:/usr/local/bin"
@@ -44,6 +49,9 @@ def analyze_log(*args):
         analyzer.display_gui(filename, summary, df)
     return output
 
+def monitor_system(*args):
+    monitor = SystemMonitor()
+    monitor.display_gui()
 
 def cd_command(*args):
     if not args:
@@ -162,6 +170,7 @@ commands = {
     "cd": cd_command,
     "history": history,
     "analyze_log": analyze_log,
+    "monitor": monitor_system,
 }
 
 # For autocompletion
@@ -175,7 +184,7 @@ def get_executables_in_path():
                     exes.add(item)
     return sorted(exes)
 
-BUILTINS = ["cd", "pwd", "echo", "exit", "type","history"]
+BUILTINS = ["cd", "pwd", "echo", "exit", "type","history", "analyze_log", "monitor"]
 
 global last_text, tab_count, last_matches
 last_text = ""

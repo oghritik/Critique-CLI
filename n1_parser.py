@@ -19,6 +19,7 @@ class NLPCommandParser:
             "exit the shell": ("exit", []),
             "show command history": ("history", []),
             "check if command exists": ("type", None),  # Requires argument
+            "monitor system resources": ("monitor", []),  # New template for monitor
         }
         
         # Cache embeddings for command templates
