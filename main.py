@@ -290,7 +290,7 @@ def main():
     load_history()
     
     anim.banner()
-    print("Welcome to my CLI Baby!")
+    # print("Welcome to my CLI Baby!")
     print(" ")
     
     try:

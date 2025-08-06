@@ -171,10 +171,11 @@ class Animations:
             banner_text.append("\n")
 
         self.console.print(banner_text)
+        self.console.print("\n[bold green]Welcome to my CLI Baby!\n")
 
 
 # -------- Example usage --------
 if __name__ == "__main__":
     anim = Animations()
     anim.banner()
-    print("Welcome to My CLI!")
+    # print("Welcome to My CLI!")
