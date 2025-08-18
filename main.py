@@ -87,6 +87,11 @@ def pwd():
     return os.getcwd() + "\n"
 
 def echo(*args):
+    if os.name == "nt":
+        reserved_names = ["PRN", "CON", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
+        for arg in args:
+            if arg.upper() in reserved_names:
+                return f"echo: {arg} is a reserved device name on Windows\n"
     return " ".join(args) + "\n"
 
 hist = []
