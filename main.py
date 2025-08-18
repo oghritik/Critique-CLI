@@ -18,6 +18,9 @@ except ImportError:
 from log_analyzer import LogAnalyzer
 from system_monitor import SystemMonitor
 
+from animations import Animations
+anim = Animations()
+
 def find_in_path(command):
     default_path = "/bin:/usr/bin:/usr/local/bin"
     if os.name == "nt":
@@ -261,6 +264,8 @@ def cat (command, args):
     else:
         return(f"{command}: command not found")
 
+# ---------------------------------------------------------------main----------------------------------------------------
+
 def main():
     # Initialize NLP parser
     try:
@@ -288,6 +293,11 @@ def main():
                     hist.append(cmd)
                     readline.add_history(cmd)
     load_history()
+    
+    anim.banner()
+    # print("Welcome to my CLI Baby!")
+    print(" ")
+    
     try:
         while True:
             cmd = input("$ ")

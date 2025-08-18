@@ -132,3 +132,7 @@ class SystemMonitor:
     def toggle_monitoring(self, root):
         self.monitoring = not self.monitoring
         root.destroy() if not self.monitoring else None
+        
+if __name__ == "__main__":
+    monitor = SystemMonitor()
+    monitor.display_gui()
