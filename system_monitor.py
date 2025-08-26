@@ -137,6 +137,132 @@
 #     monitor = SystemMonitor()
 #     monitor.display_gui()
 #--------------------------------------------------------------------------------
+
+# import psutil
+# import pandas as pd
+# import customtkinter as ctk
+# import matplotlib.pyplot as plt
+# from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+# import time
+
+# class SystemMonitor:
+#     def __init__(self):
+#         self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
+#         self.monitoring = False
+#         self.max_history = 60  # Keep last 60 seconds of data
+
+#     def collect_metrics(self):
+#         """Collect real-time system metrics."""
+#         cpu = psutil.cpu_percent(interval=1)
+#         ram = psutil.virtual_memory().percent
+#         disk = psutil.disk_usage('/').percent
+#         timestamp = time.time()
+#         return {'timestamp': timestamp, 'cpu': cpu, 'ram': ram, 'disk': disk}
+
+#     def monitor_system(self):
+#         """Update dataset with latest metrics."""
+#         metrics = self.collect_metrics()
+#         self.data = pd.concat([self.data, pd.DataFrame([metrics])], ignore_index=True)
+
+#         # Keep only the last `max_history` seconds
+#         if len(self.data) > self.max_history:
+#             self.data = self.data.iloc[-self.max_history:]
+
+#         return metrics
+
+#     def get_process_data(self):
+#         """Collect CPU usage of all processes."""
+#         processes = []
+#         for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+#             try:
+#                 processes.append(proc.info)
+#             except (psutil.NoSuchProcess, psutil.AccessDenied):
+#                 continue
+#         return pd.DataFrame(processes)
+
+#     def display_gui(self):
+#         ctk.set_appearance_mode("dark")
+#         root = ctk.CTk()
+#         root.title("Real-Time System Monitor")
+#         root.geometry("1000x800")
+
+#         # Metrics frame
+#         metrics_frame = ctk.CTkFrame(root)
+#         metrics_frame.pack(pady=10, padx=10, fill="x")
+#         cpu_label = ctk.CTkLabel(metrics_frame, text="CPU: 0%")
+#         cpu_label.pack(anchor="w")
+#         ram_label = ctk.CTkLabel(metrics_frame, text="RAM: 0%")
+#         ram_label.pack(anchor="w")
+#         disk_label = ctk.CTkLabel(metrics_frame, text="Disk: 0%")
+#         disk_label.pack(anchor="w")
+
+#         # Plot frame (system usage)
+#         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
+#         fig.tight_layout(pad=4.0)
+
+#         canvas = FigureCanvasTkAgg(fig, master=root)
+#         canvas.get_tk_widget().pack(pady=10, padx=10, fill="both", expand=True)
+
+#         # Control frame
+#         control_frame = ctk.CTkFrame(root)
+#         control_frame.pack(pady=10, padx=10, fill="x")
+#         toggle_button = ctk.CTkButton(control_frame, text="Stop Monitoring",
+#                                       command=lambda: self.toggle_monitoring(root))
+#         toggle_button.pack()
+
+#         def update_gui():
+#             if not self.monitoring:
+#                 return
+
+#             # ---- System metrics ----
+#             metrics = self.monitor_system()
+#             cpu_label.configure(text=f"CPU: {metrics['cpu']:.1f}%")
+#             ram_label.configure(text=f"RAM: {metrics['ram']:.1f}%")
+#             disk_label.configure(text=f"Disk: {metrics['disk']:.1f}%")
+
+#             ax1.clear()
+#             times = (self.data['timestamp'] - self.data['timestamp'].iloc[-1]).values
+#             ax1.plot(times, self.data['cpu'], label="CPU")
+#             ax1.plot(times, self.data['ram'], label="RAM")
+#             ax1.plot(times, self.data['disk'], label="Disk")
+#             ax1.set_title("System Resource Usage (last 60s)")
+#             ax1.set_xlabel("Time (s ago)")
+#             ax1.set_ylabel("Usage (%)")
+#             ax1.legend()
+
+#             # ---- Process scatter plot ----
+#             ax2.clear()
+#             process_df = self.get_process_data()
+#             if not process_df.empty:
+#                 ax2.scatter(process_df['pid'], process_df['cpu_percent'], alpha=0.6)
+#                 ax2.set_title("CPU Usage by Processes")
+#                 ax2.set_xlabel("Process ID (PID)")
+#                 ax2.set_ylabel("CPU Usage (%)")
+
+#                 # Annotate top 5 CPU-hogging processes
+#                 top_procs = process_df.nlargest(5, 'cpu_percent')
+#                 for _, row in top_procs.iterrows():
+#                     ax2.annotate(row['name'], (row['pid'], row['cpu_percent']),
+#                                  textcoords="offset points", xytext=(5,5), fontsize=8)
+
+#             canvas.draw()
+#             root.after(2000, update_gui)  # update every 2 seconds
+
+#         self.monitoring = True
+#         update_gui()
+#         root.mainloop()
+
+#     def toggle_monitoring(self, root):
+#         self.monitoring = not self.monitoring
+#         root.destroy() if not self.monitoring else None
+
+# if __name__ == "__main__":
+#     monitor = SystemMonitor()
+#     monitor.display_gui()
+    
+    
+    
+#--------------------------------------------------------------------------------
 import psutil
 import pandas as pd
 import customtkinter as ctk
@@ -144,7 +270,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 
-class SystemMonitor:
+class RealTimeMonitor:
     def __init__(self):
         self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
         self.monitoring = False
@@ -170,24 +296,38 @@ class SystemMonitor:
         return metrics
 
     def get_process_data(self):
-        """Collect CPU usage of all processes."""
+        """Collect CPU usage of all processes (with usernames)."""
         processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'username']):
             try:
                 processes.append(proc.info)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        return pd.DataFrame(processes)
+        df = pd.DataFrame(processes)
+
+        if not df.empty:
+            max_cpu = df['cpu_percent'].max()
+            if max_cpu > 0:
+                df['relative_cpu_percent'] = (df['cpu_percent'] / max_cpu) * 100
+            else:
+                df['relative_cpu_percent'] = 0
+        return df
 
     def display_gui(self):
         ctk.set_appearance_mode("dark")
         root = ctk.CTk()
-        root.title("Real-Time System Monitor")
+        root.title("Responsive Real-Time System Monitor")
         root.geometry("1000x800")
+
+        # Responsive grid
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_rowconfigure(1, weight=5)
+        root.grid_rowconfigure(2, weight=1)
+        root.grid_columnconfigure(0, weight=1)
 
         # Metrics frame
         metrics_frame = ctk.CTkFrame(root)
-        metrics_frame.pack(pady=10, padx=10, fill="x")
+        metrics_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         cpu_label = ctk.CTkLabel(metrics_frame, text="CPU: 0%")
         cpu_label.pack(anchor="w")
         ram_label = ctk.CTkLabel(metrics_frame, text="RAM: 0%")
@@ -195,16 +335,19 @@ class SystemMonitor:
         disk_label = ctk.CTkLabel(metrics_frame, text="Disk: 0%")
         disk_label.pack(anchor="w")
 
-        # Plot frame (system usage)
+        # Plot frame
+        plot_frame = ctk.CTkFrame(root)
+        plot_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
         fig.tight_layout(pad=4.0)
 
-        canvas = FigureCanvasTkAgg(fig, master=root)
-        canvas.get_tk_widget().pack(pady=10, padx=10, fill="both", expand=True)
+        canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+        canvas.get_tk_widget().pack(expand=True, fill="both")
 
         # Control frame
         control_frame = ctk.CTkFrame(root)
-        control_frame.pack(pady=10, padx=10, fill="x")
+        control_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
         toggle_button = ctk.CTkButton(control_frame, text="Stop Monitoring",
                                       command=lambda: self.toggle_monitoring(root))
         toggle_button.pack()
@@ -219,6 +362,7 @@ class SystemMonitor:
             ram_label.configure(text=f"RAM: {metrics['ram']:.1f}%")
             disk_label.configure(text=f"Disk: {metrics['disk']:.1f}%")
 
+            # ---- Historical usage plot ----
             ax1.clear()
             times = (self.data['timestamp'] - self.data['timestamp'].iloc[-1]).values
             ax1.plot(times, self.data['cpu'], label="CPU")
@@ -229,22 +373,59 @@ class SystemMonitor:
             ax1.set_ylabel("Usage (%)")
             ax1.legend()
 
-            # ---- Process scatter plot ----
+            # ---- User-based scatter plot ----
+            # ---- User + PID based scatter plot ----
             ax2.clear()
             process_df = self.get_process_data()
             if not process_df.empty:
-                ax2.scatter(process_df['pid'], process_df['cpu_percent'], alpha=0.6)
-                ax2.set_title("CPU Usage by Processes")
-                ax2.set_xlabel("Process ID (PID)")
-                ax2.set_ylabel("CPU Usage (%)")
+                # Keep only active processes
+                active_df = process_df[process_df['cpu_percent'] > 0]
 
-                # Annotate top 5 CPU-hogging processes
-                top_procs = process_df.nlargest(5, 'cpu_percent')
-                for _, row in top_procs.iterrows():
-                    ax2.annotate(row['name'], (row['pid'], row['cpu_percent']),
-                                 textcoords="offset points", xytext=(5,5), fontsize=8)
+                if not active_df.empty:
+                    # Normalize relative to max
+                    max_cpu = active_df['cpu_percent'].max()
+                    active_df['relative_cpu_percent'] = (active_df['cpu_percent'] / max_cpu) * 100
 
+                    # Group by user, sort each by PID
+                    active_df = active_df.sort_values(by=['username', 'pid'])
+
+                    # Build a dynamic X-axis index
+                    x_labels = []
+                    x_vals = []
+                    counter = 0
+                    for user, group in active_df.groupby('username'):
+                        for _, row in group.iterrows():
+                            x_labels.append(f"{user}\nPID:{row['pid']}")
+                            x_vals.append(counter)
+                            counter += 1
+
+                    y_vals = active_df['relative_cpu_percent'].values
+
+                    # Scatter plot
+                    ax2.scatter(x_vals, y_vals, alpha=0.7)
+
+                    # Titles and labels
+                    ax2.set_title("Relative CPU Usage by User + PID")
+                    ax2.set_xlabel("User / Process PID")
+                    ax2.set_ylabel("Relative CPU Usage (%)")
+
+                    # Dynamic X ticks
+                    ax2.set_xticks(range(len(x_labels)))
+                    ax2.set_xticklabels(x_labels, rotation=45, ha="right")
+
+                    # Y-axis auto scaling but relative (always up to 100)
+                    ax2.set_ylim(0, 105)
+
+                    # Annotate top processes
+                    top_procs = active_df.nlargest(5, 'cpu_percent')
+                    for i, row in enumerate(active_df.itertuples()):
+                        if row.pid in top_procs['pid'].values:
+                            ax2.annotate(row.name,
+                                         (x_vals[i], y_vals[i]),
+                                         textcoords="offset points", xytext=(5, 5), fontsize=8)
+            fig.tight_layout(pad=3.0)
             canvas.draw()
+
             root.after(2000, update_gui)  # update every 2 seconds
 
         self.monitoring = True
@@ -255,6 +436,7 @@ class SystemMonitor:
         self.monitoring = not self.monitoring
         root.destroy() if not self.monitoring else None
 
+
 if __name__ == "__main__":
-    monitor = SystemMonitor()
+    monitor = RealTimeMonitor()
     monitor.display_gui()
