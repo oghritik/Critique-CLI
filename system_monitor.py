@@ -270,7 +270,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 
-class RealTimeMonitor:
+class SystemMonitor:
     def __init__(self):
         self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
         self.monitoring = False
@@ -312,45 +312,73 @@ class RealTimeMonitor:
             else:
                 df['relative_cpu_percent'] = 0
         return df
-
+    
     def display_gui(self):
         ctk.set_appearance_mode("dark")
         root = ctk.CTk()
         root.title("Responsive Real-Time System Monitor")
         root.geometry("1000x800")
 
-        # Responsive grid
-        root.grid_rowconfigure(0, weight=1)
-        root.grid_rowconfigure(1, weight=5)
-        root.grid_rowconfigure(2, weight=1)
+        # Responsive grid for the root window
+        root.grid_rowconfigure(0, weight=0) # For metrics
+        root.grid_rowconfigure(1, weight=1) # For tabview
         root.grid_columnconfigure(0, weight=1)
 
-        # Metrics frame
-        metrics_frame = ctk.CTkFrame(root)
-        metrics_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        cpu_label = ctk.CTkLabel(metrics_frame, text="CPU: 0%")
-        cpu_label.pack(anchor="w")
-        ram_label = ctk.CTkLabel(metrics_frame, text="RAM: 0%")
-        ram_label.pack(anchor="w")
-        disk_label = ctk.CTkLabel(metrics_frame, text="Disk: 0%")
-        disk_label.pack(anchor="w")
+        # --- Metrics Frame (Top) ---
+        metrics_frame = ctk.CTkFrame(root, height=50)
+        metrics_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        metrics_frame.pack_propagate(False) # Prevent frame from resizing to content
 
-        # Plot frame
-        plot_frame = ctk.CTkFrame(root)
-        plot_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        # Metric labels
+        cpu_label = ctk.CTkLabel(metrics_frame, text="CPU: 0%", font=("Arial", 18))
+        cpu_label.pack(side="left", padx=20, pady=5)
+        ram_label = ctk.CTkLabel(metrics_frame, text="RAM: 0%", font=("Arial", 18))
+        ram_label.pack(side="left", padx=20, pady=5)
+        disk_label = ctk.CTkLabel(metrics_frame, text="DISK: 0%", font=("Arial", 18))
+        disk_label.pack(side="left", padx=20, pady=5)
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
-        fig.tight_layout(pad=4.0)
+        # --- Tabview for Plots ---
+        tabview = ctk.CTkTabview(root, fg_color="#F0F0F0",
+                                segmented_button_fg_color=("gray60", "gray30"),
+                                segmented_button_selected_color="gray70",
+                                segmented_button_selected_hover_color="gray70",
+                                segmented_button_unselected_color="gray20",
+                                segmented_button_unselected_hover_color="gray20")
+        tabview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
 
-        canvas = FigureCanvasTkAgg(fig, master=plot_frame)
-        canvas.get_tk_widget().pack(expand=True, fill="both")
+        # --- System Usage Tab ---
+        system_usage_tab = tabview.add("SYSTEM USAGE")
+        system_usage_tab.grid_rowconfigure(0, weight=1)
+        system_usage_tab.grid_columnconfigure(0, weight=1)
 
-        # Control frame
-        control_frame = ctk.CTkFrame(root)
-        control_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
-        toggle_button = ctk.CTkButton(control_frame, text="Stop Monitoring",
-                                      command=lambda: self.toggle_monitoring(root))
-        toggle_button.pack()
+        line_plot_frame = ctk.CTkFrame(system_usage_tab, fg_color="white")
+        line_plot_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        line_plot_frame.grid_rowconfigure(0, weight=1)
+        line_plot_frame.grid_columnconfigure(0, weight=1)
+
+        line_fig, line_ax = plt.subplots(figsize=(8, 6), facecolor="white")
+        line_ax.set_facecolor("#F0F0F0")
+        line_canvas = FigureCanvasTkAgg(line_fig, master=line_plot_frame)
+        line_canvas_widget = line_canvas.get_tk_widget()
+        line_canvas_widget.pack(expand=True, fill="both")
+
+        # --- Scatter Plot Tab ---
+        scatter_plot_tab = tabview.add("SCATTER PLOT")
+        scatter_plot_tab.grid_rowconfigure(0, weight=1)
+        scatter_plot_tab.grid_columnconfigure(0, weight=1)
+
+        scatter_plot_frame = ctk.CTkFrame(scatter_plot_tab, fg_color="white")
+        scatter_plot_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        scatter_plot_frame.grid_rowconfigure(0, weight=1)
+        scatter_plot_frame.grid_columnconfigure(0, weight=1)
+
+        scatter_fig, scatter_ax = plt.subplots(figsize=(8, 6), facecolor="white")
+        scatter_ax.set_facecolor("#F0F0F0")
+        scatter_canvas = FigureCanvasTkAgg(scatter_fig, master=scatter_plot_frame)
+        scatter_canvas_widget = scatter_canvas.get_tk_widget()
+        scatter_canvas_widget.pack(expand=True, fill="both")
+        
+        tabview.set("SYSTEM USAGE")
 
         def update_gui():
             if not self.monitoring:
@@ -360,83 +388,131 @@ class RealTimeMonitor:
             metrics = self.monitor_system()
             cpu_label.configure(text=f"CPU: {metrics['cpu']:.1f}%")
             ram_label.configure(text=f"RAM: {metrics['ram']:.1f}%")
-            disk_label.configure(text=f"Disk: {metrics['disk']:.1f}%")
+            disk_label.configure(text=f"DISK: {metrics['disk']:.1f}%")
 
-            # ---- Historical usage plot ----
-            ax1.clear()
-            times = (self.data['timestamp'] - self.data['timestamp'].iloc[-1]).values
-            ax1.plot(times, self.data['cpu'], label="CPU")
-            ax1.plot(times, self.data['ram'], label="RAM")
-            ax1.plot(times, self.data['disk'], label="Disk")
-            ax1.set_title("System Resource Usage (last 60s)")
-            ax1.set_xlabel("Time (s ago)")
-            ax1.set_ylabel("Usage (%)")
-            ax1.legend()
+            # ---- Historical usage plot (Line Graph) ----
+            line_ax.clear()
+            times = (self.data['timestamp'] - self.data['timestamp'].iloc[-1]).values if not self.data.empty else []
+            line_ax.plot(times, self.data['cpu'], color='darkred', label="CPU")
+            line_ax.plot(times, self.data['ram'], color='green', label="RAM")
+            line_ax.plot(times, self.data['disk'], color='blue', label="DISK")
+            
+            line_ax.set_title("")
+            line_ax.set_xlabel("Timeline")
+            line_ax.set_ylabel("Usage (%)")
+            line_ax.set_ylim(0, 100)
+            line_ax.legend()
+            line_fig.tight_layout(pad=3.0)
+            line_canvas.draw()
 
-            # ---- User-based scatter plot ----
-            # ---- User + PID based scatter plot ----
-            ax2.clear()
+            # ---- User/Process Scatter Plot ----
+            scatter_ax.clear()
             process_df = self.get_process_data()
+            
             if not process_df.empty:
-                # Keep only active processes
-                active_df = process_df[process_df['cpu_percent'] > 0]
+                user_cpu_summary = process_df.groupby('username')['cpu_percent'].sum().reset_index()
+                user_threshold = 1.0 
+                relevant_users = user_cpu_summary[user_cpu_summary['cpu_percent'] > user_threshold]['username'].tolist()
 
-                if not active_df.empty:
-                    # Normalize relative to max
-                    max_cpu = active_df['cpu_percent'].max()
-                    active_df['relative_cpu_percent'] = (active_df['cpu_percent'] / max_cpu) * 100
+                filtered_df = process_df[process_df['username'].isin(relevant_users)].copy()
+                
+                process_threshold = 0.5 
+                filtered_df = filtered_df[filtered_df['cpu_percent'] >= process_threshold]
 
-                    # Group by user, sort each by PID
-                    active_df = active_df.sort_values(by=['username', 'pid'])
+                if not filtered_df.empty:
+                    filtered_df = filtered_df.sort_values(by=['username', 'cpu_percent'], ascending=[True, False]).reset_index(drop=True)
 
-                    # Build a dynamic X-axis index
-                    x_labels = []
+                    users = filtered_df['username'].unique()
                     x_vals = []
-                    counter = 0
-                    for user, group in active_df.groupby('username'):
-                        for _, row in group.iterrows():
-                            x_labels.append(f"{user}\nPID:{row['pid']}")
-                            x_vals.append(counter)
-                            counter += 1
+                    y_vals = []
+                    x_tick_labels = []
+                    process_names = [] # Store process names for annotation
+                    
+                    blue_shade_1 = '#ADD8E6' 
+                    blue_shade_2 = '#87CEEB' 
 
-                    y_vals = active_df['relative_cpu_percent'].values
+                    for rect in scatter_ax.patches:
+                        rect.remove()
 
-                    # Scatter plot
-                    ax2.scatter(x_vals, y_vals, alpha=0.7)
+                    current_x_offset = 0
+                    for i, user in enumerate(users):
+                        user_procs = filtered_df[filtered_df['username'] == user]
+                        
+                        user_x_indices = list(range(current_x_offset, current_x_offset + len(user_procs)))
+                        
+                        x_vals.extend(user_x_indices)
+                        y_vals.extend(user_procs['cpu_percent'].tolist())
+                        process_names.extend(user_procs['name'].tolist()) # Collect process names
+                        
+                        if user_procs.empty:
+                            continue
+                        
+                        center_x_pos = current_x_offset + (len(user_procs) - 1) / 2
+                        x_tick_labels.append((center_x_pos, user))
 
-                    # Titles and labels
-                    ax2.set_title("Relative CPU Usage by User + PID")
-                    ax2.set_xlabel("User / Process PID")
-                    ax2.set_ylabel("Relative CPU Usage (%)")
+                        current_x_offset += len(user_procs) + 1 
 
-                    # Dynamic X ticks
-                    ax2.set_xticks(range(len(x_labels)))
-                    ax2.set_xticklabels(x_labels, rotation=45, ha="right")
+                    scatter_ax.scatter(x_vals, y_vals, c='blue', alpha=0.7)
+                    
+                    # --- NEW: Add process name annotations ---
+                    for j, (x, y) in enumerate(zip(x_vals, y_vals)):
+                        # Shorten process name if too long, or use '...'
+                        name = process_names[j]
+                        if len(name) > 15: # Arbitrary length to keep labels concise
+                            name = name[:12] + '...'
+                        scatter_ax.annotate(name, 
+                                            (x, y), 
+                                            textcoords="offset points", # how to position the text
+                                            xytext=(0,5),               # distance from text to points (x,y)
+                                            ha='center',                # horizontal alignment
+                                            va='bottom',                # vertical alignment
+                                            fontsize=7,                 # small but visible font size
+                                            color='dimgray',            # color for visibility
+                                            alpha=0.8)                  # slight transparency
+                    # --- END NEW ---
 
-                    # Y-axis auto scaling but relative (always up to 100)
-                    ax2.set_ylim(0, 105)
+                    max_cpu = max(y_vals) if y_vals else 0
+                    scatter_ax.set_ylim(0, max_cpu * 1.2 if max_cpu > 0 else 100)
+                    
+                    current_x_patch_start = 0
+                    for i, user in enumerate(users):
+                        user_procs_count = len(filtered_df[filtered_df['username'] == user])
+                        
+                        rect_color = blue_shade_1 if i % 2 == 0 else blue_shade_2
+                        
+                        rect = plt.Rectangle((current_x_patch_start - 0.5, scatter_ax.get_ylim()[0]),
+                                            user_procs_count + 1,
+                                            scatter_ax.get_ylim()[1] - scatter_ax.get_ylim()[0],
+                                            facecolor=rect_color, edgecolor='none', zorder=0)
+                        scatter_ax.add_patch(rect)
+                        current_x_patch_start += user_procs_count + 1
 
-                    # Annotate top processes
-                    top_procs = active_df.nlargest(5, 'cpu_percent')
-                    for i, row in enumerate(active_df.itertuples()):
-                        if row.pid in top_procs['pid'].values:
-                            ax2.annotate(row.name,
-                                         (x_vals[i], y_vals[i]),
-                                         textcoords="offset points", xytext=(5, 5), fontsize=8)
-            fig.tight_layout(pad=3.0)
-            canvas.draw()
+                    tick_positions = [pos for pos, _ in x_tick_labels]
+                    tick_labels_text = [label for _, label in x_tick_labels]
+                    
+                    scatter_ax.set_xticks(tick_positions)
+                    scatter_ax.set_xticklabels(tick_labels_text, rotation=45, ha="right", fontsize=8)
+                    
+                    scatter_ax.set_title("")
+                    scatter_ax.set_xlabel("User / Process Category")
+                    scatter_ax.set_ylabel("CPU Usage (%)")
+                    scatter_ax.tick_params(axis='x', length=0)
+            
+            scatter_fig.tight_layout(pad=3.0)
+            scatter_canvas.draw()
 
-            root.after(2000, update_gui)  # update every 2 seconds
+            root.after(2000, update_gui)
 
         self.monitoring = True
         update_gui()
         root.mainloop()
 
+        
     def toggle_monitoring(self, root):
         self.monitoring = not self.monitoring
         root.destroy() if not self.monitoring else None
 
 
 if __name__ == "__main__":
-    monitor = RealTimeMonitor()
+    monitor = SystemMonitor()
     monitor.display_gui()
