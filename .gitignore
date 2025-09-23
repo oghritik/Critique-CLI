@@ -3,6 +3,8 @@ cli_venv/
 myenv/
 enve/
 .DS_Store/
+.kiro/
+.vscode/
 cli/
 cli1/
 __pycache__/
