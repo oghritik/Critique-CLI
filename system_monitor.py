@@ -8,14 +8,42 @@ import numpy as np
 from scipy.interpolate import make_interp_spline
 import time
 
-# --- Matplotlib style setup for a modern look ---
+# --- Force consistent DPI and scaling ---
+import os
+import sys
+
+# Force DPI awareness on Windows
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System DPI aware
+    except:
+        pass
+
+# Force matplotlib backend and DPI settings
+os.environ['MPLBACKEND'] = 'TkAgg'
+os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+os.environ['QT_SCALE_FACTOR'] = '1'
+
+# --- Matplotlib style setup with aggressive DPI control ---
+import matplotlib
+matplotlib.use('TkAgg', force=True)
+
 plt.style.use('dark_background')
 plt.rcParams.update({
+    'figure.dpi': 100,  # Restore readable DPI
+    'savefig.dpi': 100,
+    'figure.figsize': (8, 4),  # Restore original figure size
     'axes.edgecolor': 'black',
     'axes.linewidth': 2,
     'lines.linewidth': 2.5,
     'font.family': 'sans-serif',
     'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+    'font.size': 10,
+    'axes.titlesize': 12,
+    'axes.labelsize': 10,
+    'xtick.labelsize': 9,
+    'ytick.labelsize': 9,
 })
 
 class SystemMonitor:
@@ -39,7 +67,14 @@ class SystemMonitor:
         metrics = self.collect_metrics()
         timestamp = time.time()
         new_data = {'timestamp': timestamp, **metrics}
-        self.data = pd.concat([self.data, pd.DataFrame([new_data])], ignore_index=True)
+        
+        # Fix pandas FutureWarning by ensuring proper DataFrame structure
+        if self.data.empty:
+            self.data = pd.DataFrame([new_data])
+        else:
+            new_row = pd.DataFrame([new_data])
+            self.data = pd.concat([self.data, new_row], ignore_index=True)
+            
         if len(self.data) > self.max_history:
             self.data = self.data.iloc[-self.max_history:]
         return metrics
@@ -99,26 +134,83 @@ class SystemMonitor:
             self.usage_button.configure(text_color="#A0A0A0", font=self.nav_font_normal)
 
     def update_font_size(self, event=None):
-        """Dynamically adjust font sizes based on window width."""
+        """Dynamically adjust font sizes based on window width and DPI."""
         if not self.root: return
-        width = self.root.winfo_width()
         
-        base_width = 1000
-        scale_factor = width / base_width
+        try:
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+            
+            # Calculate scale factor based on window size
+            base_width = 800
+            base_height = 500
+            width_scale = width / base_width
+            height_scale = height / base_height
+            scale_factor = min(width_scale, height_scale)  # Use smaller scale to prevent oversizing
+            
+            # Clamp scale factor to reasonable bounds
+            scale_factor = max(0.8, min(2.0, scale_factor))
+            
+            nav_size = max(12, min(24, int(16 * scale_factor)))
+            legend_size = max(10, min(20, int(14 * scale_factor)))
 
-        nav_size = max(18, min(28, int(22 * scale_factor)))
-        legend_size = max(14, min(22, int(16 * scale_factor)))
-
-        self.nav_font_bold.configure(size=nav_size)
-        self.nav_font_normal.configure(size=nav_size)
-        self.legend_font.configure(size=legend_size)
+            self.nav_font_bold.configure(size=nav_size)
+            self.nav_font_normal.configure(size=nav_size)
+            self.legend_font.configure(size=legend_size)
+            
+            # Update matplotlib font sizes
+            plt.rcParams.update({
+                'font.size': max(8, min(12, int(10 * scale_factor))),
+                'axes.labelsize': max(8, min(12, int(10 * scale_factor))),
+                'xtick.labelsize': max(7, min(10, int(9 * scale_factor))),
+                'ytick.labelsize': max(7, min(10, int(9 * scale_factor))),
+            })
+        except:
+            pass  # Ignore errors during font scaling
 
     def display_gui(self):
+        # --- Aggressive DPI and scaling control ---
         ctk.set_appearance_mode("dark")
+        
+        # Try to detect and override system scaling
+        try:
+            import tkinter as tk
+            temp_root = tk.Tk()
+            temp_root.withdraw()
+            
+            # Get actual vs reported screen dimensions to detect scaling
+            screen_width = temp_root.winfo_screenwidth()
+            screen_height = temp_root.winfo_screenheight()
+            actual_width = temp_root.winfo_vrootwidth()
+            actual_height = temp_root.winfo_vrootheight()
+            
+            # Calculate scaling factor
+            scale_x = actual_width / screen_width if screen_width > 0 else 1.0
+            scale_y = actual_height / screen_height if screen_height > 0 else 1.0
+            detected_scale = max(scale_x, scale_y)
+            
+            temp_root.destroy()
+            
+            # Force scaling based on detection
+            if detected_scale > 1.2:  # High DPI detected
+                ctk.set_widget_scaling(0.8)  # Reduce scaling
+                ctk.set_window_scaling(0.8)
+            else:
+                ctk.set_widget_scaling(1.0)
+                ctk.set_window_scaling(1.0)
+                
+        except:
+            # Fallback to standard scaling
+            ctk.set_widget_scaling(1.0)
+            ctk.set_window_scaling(1.0)
+        
         self.root = ctk.CTk()
         self.root.title("System Monitor")
+        
+        # --- Original window size with DPI fixes ---
         self.root.geometry("700x450")
         self.root.configure(fg_color="#212121")
+        self.root.minsize(700, 450)
 
         # --- Fonts ---
         self.nav_font_bold = ctk.CTkFont("Arial", 15, "bold")
@@ -160,7 +252,9 @@ class SystemMonitor:
         # --- Line Plot Frame & Canvas ---
         self.line_plot_frame = ctk.CTkFrame(content_area, fg_color="transparent", corner_radius=20)
         self.line_plot_frame.grid(row=0, column=0, sticky="nsew")
-        self.line_fig, self.line_ax = plt.subplots(facecolor="#F0F0F0")
+        
+        # Create figure with DPI control but readable size
+        self.line_fig, self.line_ax = plt.subplots(figsize=(8, 4), dpi=100, facecolor="#F0F0F0")
         self.line_ax.set_facecolor("#F0F0F0")
         self.line_canvas = FigureCanvasTkAgg(self.line_fig, master=self.line_plot_frame)
         self.line_canvas.get_tk_widget().pack(expand=True, fill="both", padx=15, pady=15)
@@ -168,7 +262,9 @@ class SystemMonitor:
         # --- Scatter Plot Frame & Canvas ---
         self.scatter_plot_frame = ctk.CTkFrame(content_area, fg_color="transparent", corner_radius=20)
         self.scatter_plot_frame.grid(row=0, column=0, sticky="nsew")
-        self.scatter_fig, self.scatter_ax = plt.subplots(facecolor="#F0F0F0")
+        
+        # Create figure with DPI control but readable size
+        self.scatter_fig, self.scatter_ax = plt.subplots(figsize=(8, 4), dpi=100, facecolor="#F0F0F0")
         self.scatter_ax.set_facecolor("#F0F0F0")
         self.scatter_canvas = FigureCanvasTkAgg(self.scatter_fig, master=self.scatter_plot_frame)
         self.scatter_canvas.get_tk_widget().pack(expand=True, fill="both", padx=15, pady=15)
@@ -208,8 +304,17 @@ class SystemMonitor:
         self.disk_label_scatter.pack(side="left", padx=20)
 
         def update_gui():
-            if not self.monitoring: return
-            metrics = self.monitor_system()
+            if not self.monitoring: 
+                return
+            
+            try:
+                metrics = self.monitor_system()
+            except Exception as e:
+                # Handle any errors in monitoring and continue
+                print(f"Monitoring error: {e}")
+                if self.monitoring:
+                    self.root.after(500, update_gui)
+                return
             # Update labels in BOTH legends
             for label in [self.cpu_label_line, self.cpu_label_scatter]:
                 label.configure(text=f"CPU : {metrics['cpu']:.0f}%")
@@ -477,7 +582,12 @@ class SystemMonitor:
             self.scatter_fig.tight_layout(pad=0.5)
             self.scatter_canvas.draw()
 
-            self.root.after(500, update_gui)
+            # Safe scheduling of next update
+            if self.monitoring and self.root and self.root.winfo_exists():
+                try:
+                    self.root.after(500, update_gui)
+                except Exception:
+                    pass  # Ignore tkinter errors during shutdown
 
         # Initialize the view
         self.monitoring = True
