@@ -1,3 +1,7 @@
+from warnings import simplefilter
+
+simplefilter(action='ignore', category=FutureWarning)
+
 import sys
 import os
 import subprocess
