@@ -9,17 +9,10 @@ import shlex
 try:
     import readline
 except ImportError:
-    import pyreadline3 as readline  # fallback for Windows
+    import pyreadline3 as readline  
 
 from io import StringIO
 from io import TextIOWrapper
-try:
-    from n1_parser import NLPCommandParser
-    nlp_parser = NLPCommandParser()
-except ImportError:
-    print("Warning: NLP parser unavailable. Natural language commands disabled.")
-    nlp_parser = None
-from log_analyzer import LogAnalyzer
 from system_monitor import SystemMonitor
 
 from animations import Animations
@@ -39,22 +32,6 @@ def find_in_path(command):
             if os.path.isfile(full_path_exe) and os.access(full_path_exe, os.X_OK):
                 return full_path_exe
     return None
-
-def analyze_log(*args):
-    analyzer = LogAnalyzer()
-    if not args:
-        return "analyze_log: missing file operand\n"
-    use_gui = "--gui" in args
-    actual_args = [arg for arg in args if arg != "--gui"]
-    if not actual_args:
-        return "analyze_log: missing file operand\n"
-    filename = actual_args[0]
-    if not os.path.exists(filename):
-        return f"analyze_log: {filename}: No such file\n"
-    output, summary, df = analyzer.analyze_log(filename)
-    if use_gui:
-        analyzer.display_gui(filename, summary, df)
-    return output
 
 def monitor_system(*args):
     monitor = SystemMonitor()
@@ -181,7 +158,6 @@ commands = {
     "pwd": pwd,
     "cd": cd_command,
     "history": history,
-    "analyze_log": analyze_log,
     "monitor": monitor_system,
 }
 
@@ -196,7 +172,7 @@ def get_executables_in_path():
                     exes.add(item)
     return sorted(exes)
 
-BUILTINS = ["cd", "pwd", "echo", "exit", "type","history", "analyze_log", "monitor"]
+BUILTINS = ["cd", "pwd", "echo", "exit", "type","history", "monitor"]
 
 global last_text, tab_count, last_matches
 last_text = ""
@@ -271,14 +247,6 @@ def cat (command, args):
 # ---------------------------------------------------------------main----------------------------------------------------
 
 def main():
-    # Initialize NLP parser
-    try:
-        from n1_parser import NLPCommandParser  # Fixed typo from n1_parser
-        nlp_parser = NLPCommandParser()
-    except ImportError:
-        print("Warning: NLP parser unavailable. Natural language commands disabled.")
-        nlp_parser = None 
-
     # Set default PATH for robust command execution
     if not os.environ.get("PATH"):
         default_path = "/bin:/usr/bin:/usr/local/bin"
@@ -307,19 +275,11 @@ def main():
             cmd = input("$ ")
             hist.append(cmd)
             
-            # Try parsing as a natural language command first
-            try:
-                parsed_command = nlp_parser.parse_command(cmd) if nlp_parser else None
-            except Exception as e:
-                parsed_command = None
-            if parsed_command:
-                command, args = parsed_command
-            else:
-                command_with_args = shlex.split(cmd)
-                if not command_with_args:
-                    continue
-                command = command_with_args[0]
-                args = command_with_args[1:]
+            command_with_args = shlex.split(cmd)
+            if not command_with_args:
+                continue
+            command = command_with_args[0]
+            args = command_with_args[1:]
 
             # Handle Windows built-in commands
             windows_builtins = ["dir", "copy", "del", "move"]
@@ -336,7 +296,7 @@ def main():
                 continue
 
             # Handle pipeline commands
-            if not parsed_command and "|" in command_with_args:
+            if "|" in command_with_args:
                 pipeline = []
                 current_cmd = []
                 for token in command_with_args:
