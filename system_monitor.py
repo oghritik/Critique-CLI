@@ -1,39 +1,36 @@
+import sys
+import os
 import psutil
 import pandas as pd
-import customtkinter as ctk
+import numpy as np
+import time
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import numpy as np
 from scipy.interpolate import make_interp_spline
-import time
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.ticker import FormatStrFormatter
 
-# --- Force consistent DPI and scaling ---
-import os
-import sys
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, 
+    QPushButton, QLabel, QStackedWidget, QFrame
+)
+from PySide6.QtCore import Qt, QTimer, QThread, QObject, Signal, Slot
+from PySide6.QtGui import QFont, QColor
 
-# Force DPI awareness on Windows
-if sys.platform == "win32":
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System DPI aware
-    except:
-        pass
-
-# Force matplotlib backend and DPI settings
-os.environ['MPLBACKEND'] = 'TkAgg'
-os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
-os.environ['QT_SCALE_FACTOR'] = '1'
-
-# --- Matplotlib style setup with aggressive DPI control ---
+# --- Force Matplotlib Backend ---
+# This is the correct backend for PySide6/PyQt
+os.environ['MPLBACKEND'] = 'QtAgg'
 import matplotlib
-matplotlib.use('TkAgg', force=True)
+matplotlib.use('QtAgg', force=True)
 
+# --- Matplotlib Style (Your settings) ---
+# We set the facecolor to transparent so it shows the
+# rounded-corner widget background
 plt.style.use('dark_background')
 plt.rcParams.update({
-    'figure.dpi': 100,  # Restore readable DPI
+    'figure.dpi': 100,
     'savefig.dpi': 100,
-    'figure.figsize': (8, 4),  # Restore original figure size
+    'figure.figsize': (8, 4),
     'axes.edgecolor': 'black',
     'axes.linewidth': 2,
     'lines.linewidth': 2.5,
@@ -44,56 +41,91 @@ plt.rcParams.update({
     'axes.labelsize': 10,
     'xtick.labelsize': 9,
     'ytick.labelsize': 9,
+    
+    # Key change for PySide6 integration:
+    'figure.facecolor': 'none', 
+    'axes.facecolor': 'none', 
+    'savefig.facecolor': 'none',
 })
 
-class SystemMonitor:
-    def __init__(self):
-        self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
-        self.monitoring = False
-        self.max_history = 60  # Keep last 60 seconds of data
-        self.display_time_window = 30  # Display last 30 seconds (configurable)
-        self.root = None
-        self.active_view = "usage"
 
+# ==============================================================================
+# STEP 1: THE DATA WORKER (MOVED TO A QTHREAD)
+# ==============================================================================
+
+class SystemDataWorker(QObject):
+    """
+    Runs in a separate thread to collect system data without
+    blocking the main GUI.
+    """
+    # Define signals that will carry the new data
+    dataUpdated = Signal(dict, pd.DataFrame)
+    processDataUpdated = Signal(pd.DataFrame)
+    
+    def __init__(self, max_history=60):
+        super().__init__()
+        self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
+        self.max_history = max_history
+        self.monitoring = False
+
+    def start_monitoring(self):
+        """Starts the monitoring loop."""
+        self.monitoring = True
+        
+        # --- Timer to control update frequency ---
+        # We use a QTimer *inside* the thread for stable timing
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.run_monitor_cycle)
+        self.timer.start(500) # Update every 500ms
+
+    def stop_monitoring(self):
+        """Stops the monitoring loop."""
+        self.monitoring = False
+        if hasattr(self, 'timer'):
+            self.timer.stop()
+
+    def run_monitor_cycle(self):
+        """
+        This is the main loop of the worker. It collects data
+        and emits signals.
+        """
+        if not self.monitoring:
+            return
+            
+        try:
+            # 1. Collect system metrics
+            metrics = self.collect_metrics()
+            timestamp = time.time()
+            new_data = {'timestamp': timestamp, **metrics}
+
+            if self.data.empty:
+                self.data = pd.DataFrame([new_data])
+            else:
+                new_row = pd.DataFrame([new_data])
+                self.data = pd.concat([self.data, new_row], ignore_index=True)
+                
+            if len(self.data) > self.max_history:
+                self.data = self.data.iloc[-self.max_history:]
+            
+            # EMIT SIGNAL 1
+            self.dataUpdated.emit(metrics, self.data.copy())
+
+            # 2. Collect process data
+            process_df = self.get_process_data()
+            
+            # EMIT SIGNAL 2
+            self.processDataUpdated.emit(process_df)
+            
+        except Exception as e:
+            print(f"Monitoring error: {e}")
+
+    # --- Your data collection methods, unchanged ---
     def collect_metrics(self):
         """Collect real-time system metrics."""
-        cpu = psutil.cpu_percent(interval=1)
+        cpu = psutil.cpu_percent(interval=None) # No interval for non-blocking
         ram = psutil.virtual_memory().percent
         disk = psutil.disk_usage('/').percent
         return {'cpu': cpu, 'ram': ram, 'disk': disk}
-
-    def monitor_system(self):
-        """Update dataset with latest metrics."""
-        metrics = self.collect_metrics()
-        timestamp = time.time()
-        new_data = {'timestamp': timestamp, **metrics}
-        
-        # Fix pandas FutureWarning by ensuring proper DataFrame structure
-        if self.data.empty:
-            self.data = pd.DataFrame([new_data])
-        else:
-            new_row = pd.DataFrame([new_data])
-            self.data = pd.concat([self.data, new_row], ignore_index=True)
-            
-        if len(self.data) > self.max_history:
-            self.data = self.data.iloc[-self.max_history:]
-        return metrics
-
-    # def get_process_data(self):
-    #     """Collect CPU usage of all processes grouped by username."""
-    #     processes = []
-    #     for proc in psutil.process_iter(['name', 'cpu_percent', 'username']):
-    #         try:
-    #             if proc.info['cpu_percent'] is not None and proc.info['cpu_percent'] > 0.1:
-    #                 processes.append(proc.info)
-    #         except (psutil.NoSuchProcess, psutil.AccessDenied):
-    #             continue
-    #     df = pd.DataFrame(processes)
-    #     if df.empty:
-    #         return pd.DataFrame(), {}
-    #     # Group by username and aggregate process data
-    #     user_grouped = df.groupby('username')['cpu_percent'].apply(list).to_dict()
-    #     return df, user_grouped
     
     def get_process_data(self):
         """Collect CPU usage of all processes (with usernames)."""
@@ -113,489 +145,476 @@ class SystemMonitor:
                 df['relative_cpu_percent'] = 0
         return df
 
-    def switch_view(self, view_name):
-        """Switch between the 'usage' and 'scatter' plot views."""
-        self.active_view = view_name
-        if view_name == "usage":
-            # Show usage plot and its legend
-            self.line_plot_frame.tkraise()
-            self.line_legend_frame.pack(expand=True)
-            self.scatter_legend_frame.pack_forget()
-            # Update button styles
-            self.usage_button.configure(text_color="#FFFFFF", font=self.nav_font_bold)
-            self.scatter_button.configure(text_color="#A0A0A0", font=self.nav_font_normal)
-        else:
-            # Show scatter plot and its legend
-            self.scatter_plot_frame.tkraise()
-            self.scatter_legend_frame.pack(expand=True)
-            self.line_legend_frame.pack_forget()
-            # Update button styles
-            self.scatter_button.configure(text_color="#FFFFFF", font=self.nav_font_bold)
-            self.usage_button.configure(text_color="#A0A0A0", font=self.nav_font_normal)
 
-    def update_font_size(self, event=None):
-        """Dynamically adjust font sizes based on window width and DPI."""
-        if not self.root: return
-        
-        try:
-            width = self.root.winfo_width()
-            height = self.root.winfo_height()
-            
-            # Calculate scale factor based on window size
-            base_width = 800
-            base_height = 500
-            width_scale = width / base_width
-            height_scale = height / base_height
-            scale_factor = min(width_scale, height_scale)  # Use smaller scale to prevent oversizing
-            
-            # Clamp scale factor to reasonable bounds
-            scale_factor = max(0.8, min(2.0, scale_factor))
-            
-            nav_size = max(12, min(24, int(16 * scale_factor)))
-            legend_size = max(10, min(20, int(14 * scale_factor)))
+# ==============================================================================
+# STEP 2: THE PYSIXDE6 GUI SHELL
+# ==============================================================================
 
-            self.nav_font_bold.configure(size=nav_size)
-            self.nav_font_normal.configure(size=nav_size)
-            self.legend_font.configure(size=legend_size)
-            
-            # Update matplotlib font sizes
-            plt.rcParams.update({
-                'font.size': max(8, min(12, int(10 * scale_factor))),
-                'axes.labelsize': max(8, min(12, int(10 * scale_factor))),
-                'xtick.labelsize': max(7, min(10, int(9 * scale_factor))),
-                'ytick.labelsize': max(7, min(10, int(9 * scale_factor))),
-            })
-        except:
-            pass  # Ignore errors during font scaling
-
-    def display_gui(self):
-        # --- Aggressive DPI and scaling control ---
-        ctk.set_appearance_mode("dark")
+class MainWindow(QMainWindow):
+    
+    def __init__(self):
+        super().__init__()
+        self.display_time_window = 30 # From your original code
         
-        # Try to detect and override system scaling
-        try:
-            import tkinter as tk
-            temp_root = tk.Tk()
-            temp_root.withdraw()
-            
-            # Get actual vs reported screen dimensions to detect scaling
-            screen_width = temp_root.winfo_screenwidth()
-            screen_height = temp_root.winfo_screenheight()
-            actual_width = temp_root.winfo_vrootwidth()
-            actual_height = temp_root.winfo_vrootheight()
-            
-            # Calculate scaling factor
-            scale_x = actual_width / screen_width if screen_width > 0 else 1.0
-            scale_y = actual_height / screen_height if screen_height > 0 else 1.0
-            detected_scale = max(scale_x, scale_y)
-            
-            temp_root.destroy()
-            
-            # Force scaling based on detection
-            if detected_scale > 1.2:  # High DPI detected
-                ctk.set_widget_scaling(0.8)  # Reduce scaling
-                ctk.set_window_scaling(0.8)
-            else:
-                ctk.set_widget_scaling(1.0)
-                ctk.set_window_scaling(1.0)
-                
-        except:
-            # Fallback to standard scaling
-            ctk.set_widget_scaling(1.0)
-            ctk.set_window_scaling(1.0)
-        
-        self.root = ctk.CTk()
-        self.root.title("System Monitor")
-        
-        # --- Original window size with DPI fixes ---
-        self.root.geometry("700x450")
-        self.root.configure(fg_color="#212121")
-        self.root.minsize(700, 450)
-
         # --- Fonts ---
-        self.nav_font_bold = ctk.CTkFont("Arial", 15, "bold")
-        self.nav_font_normal = ctk.CTkFont("Arial", 15)
-        self.legend_font = ctk.CTkFont("Arial", 16)
-        self.root.bind("<Configure>", self.update_font_size)
+        self.nav_font_bold = QFont("Arial", 15, QFont.Weight.Bold)
+        self.nav_font_normal = QFont("Arial", 15)
+        self.legend_font = QFont("Arial", 16)
         
-        # --- ESC key binding to exit ---
-        def on_escape(event):
-            self.monitoring = False
-            self.root.quit()
-            self.root.destroy()
+        self.init_ui()
+        self.init_worker_thread()
         
-        self.root.bind("<Escape>", on_escape)
-        self.root.focus_set()  # Ensure window can receive key events
+        # Set initial view
+        self.switch_view(0)
 
-        # --- Main UI Grid (Title, Nav, Content, Footer) ---
-        self.root.grid_rowconfigure(0, weight=0)  # Title
-        self.root.grid_rowconfigure(1, weight=0)  # Navigation
-        self.root.grid_rowconfigure(2, weight=1)  # Main Content/Plot
-        self.root.grid_rowconfigure(3, weight=0)  # Footer/Legend
-        self.root.grid_columnconfigure(0, weight=1)
+    def init_ui(self):
+        """Create the main GUI layout."""
+        
+        self.setWindowTitle("System Monitor (PySide6)")
+        self.setGeometry(100, 100, 700, 450)
+        self.setMinimumSize(700, 450)
+        
+        # Set main window background color
+        self.setStyleSheet("background-color: #212121;")
+
+        # --- Main Central Widget & Layout ---
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # --- Custom Navigation Header ---
-        nav_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        nav_frame.grid(row=1, column=0, sticky="ew", padx=25, pady=15)
-        self.usage_button = ctk.CTkButton(nav_frame, text="SYSTEM USAGE", command=lambda: self.switch_view("usage"), fg_color="transparent", hover=False)
-        self.usage_button.pack(side="left", padx=(0, 20))
-        self.scatter_button = ctk.CTkButton(nav_frame, text="SCATTER PLOT", command=lambda: self.switch_view("scatter"), fg_color="transparent", hover=False)
-        self.scatter_button.pack(side="left")
+        nav_frame = QFrame(self)
+        nav_frame.setFixedHeight(60)
+        nav_layout = QHBoxLayout(nav_frame)
+        nav_layout.setContentsMargins(25, 15, 25, 15)
+        nav_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        
+        self.usage_button = QPushButton("SYSTEM USAGE")
+        self.scatter_button = QPushButton("SCATTER PLOT")
+        
+        # Connect buttons to the switch_view slot
+        self.usage_button.clicked.connect(lambda: self.switch_view(0))
+        self.scatter_button.clicked.connect(lambda: self.switch_view(1))
 
-        # --- Main Content Area (for plots) with curved frame ---
-        content_area = ctk.CTkFrame(self.root, fg_color="#F0F0F0", corner_radius=20, border_width=0.5, border_color="#D0D0D0")
-        content_area.grid(row=2, column=0, sticky="nsew", padx=20, pady=5)
-        content_area.grid_propagate(False)
-        content_area.grid_rowconfigure(0, weight=1)
-        content_area.grid_columnconfigure(0, weight=1)
-        
-        # --- Line Plot Frame & Canvas ---
-        self.line_plot_frame = ctk.CTkFrame(content_area, fg_color="transparent", corner_radius=20)
-        self.line_plot_frame.grid(row=0, column=0, sticky="nsew")
-        
-        # Create figure with DPI control but readable size
-        self.line_fig, self.line_ax = plt.subplots(figsize=(8, 4), dpi=100, facecolor="#F0F0F0")
-        self.line_ax.set_facecolor("#F0F0F0")
-        self.line_canvas = FigureCanvasTkAgg(self.line_fig, master=self.line_plot_frame)
-        self.line_canvas.get_tk_widget().pack(expand=True, fill="both", padx=15, pady=15)
+        # Apply stylesheet for buttons (replaces configure)
+        button_style = """
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                padding: 0;
+                margin-right: 20px;
+            }
+        """
+        self.usage_button.setStyleSheet(button_style)
+        self.scatter_button.setStyleSheet(button_style)
 
-        # --- Scatter Plot Frame & Canvas ---
-        self.scatter_plot_frame = ctk.CTkFrame(content_area, fg_color="transparent", corner_radius=20)
-        self.scatter_plot_frame.grid(row=0, column=0, sticky="nsew")
+        nav_layout.addWidget(self.usage_button)
+        nav_layout.addWidget(self.scatter_button)
         
-        # Create figure with DPI control but readable size
-        self.scatter_fig, self.scatter_ax = plt.subplots(figsize=(8, 4), dpi=100, facecolor="#F0F0F0")
-        self.scatter_ax.set_facecolor("#F0F0F0")
-        self.scatter_canvas = FigureCanvasTkAgg(self.scatter_fig, master=self.scatter_plot_frame)
-        self.scatter_canvas.get_tk_widget().pack(expand=True, fill="both", padx=15, pady=15)
+        main_layout.addWidget(nav_frame)
+
+        # --- Main Content Area (QStackedWidget) ---
+        # This is the proper way to switch between views
+        self.plot_stack = QStackedWidget()
+        main_layout.addWidget(self.plot_stack)
+        
+        # --- Plot 1: Line Plot ---
+        self.line_plot_widget = QWidget()
+        line_layout = QVBoxLayout(self.line_plot_widget)
+        line_layout.setContentsMargins(20, 5, 20, 5) # padx, pady
+        
+        # This is the rounded-corner frame (the "why")
+        self.line_plot_frame = QFrame()
+        self.line_plot_frame.setStyleSheet("background-color: #F0F0F0; border-radius: 20px;")
+        line_layout.addWidget(self.line_plot_frame)
+        
+        plot_layout = QVBoxLayout(self.line_plot_frame)
+        plot_layout.setContentsMargins(15, 15, 15, 15)
+        
+        self.line_fig, self.line_ax = plt.subplots()
+        self.line_canvas = FigureCanvasQTAgg(self.line_fig)
+        plot_layout.addWidget(self.line_canvas)
+        
+        self.plot_stack.addWidget(self.line_plot_widget)
+        
+        # --- Plot 2: Scatter Plot ---
+        self.scatter_plot_widget = QWidget()
+        scatter_layout = QVBoxLayout(self.scatter_plot_widget)
+        scatter_layout.setContentsMargins(20, 5, 20, 5)
+        
+        self.scatter_plot_frame = QFrame()
+        self.scatter_plot_frame.setStyleSheet("background-color: #F0F0F0; border-radius: 20px;")
+        scatter_layout.addWidget(self.scatter_plot_frame)
+        
+        scatter_plot_layout = QVBoxLayout(self.scatter_plot_frame)
+        scatter_plot_layout.setContentsMargins(15, 15, 15, 15)
+
+        self.scatter_fig, self.scatter_ax = plt.subplots()
+        self.scatter_canvas = FigureCanvasQTAgg(self.scatter_fig)
+        scatter_plot_layout.addWidget(self.scatter_canvas)
+        
+        self.plot_stack.addWidget(self.scatter_plot_widget)
 
         # --- Footer Legend Area ---
-        footer_frame = ctk.CTkFrame(self.root, fg_color="transparent", height=60)
-        footer_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=10)
+        footer_frame = QFrame(self)
+        footer_frame.setFixedHeight(70)
+        footer_layout = QHBoxLayout(footer_frame)
+        footer_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # --- Line Plot Legend (Page 1 of stack) ---
+        self.line_legend_stack = QStackedWidget()
+        footer_layout.addWidget(self.line_legend_stack)
+        
+        self.line_legend_frame = QFrame()
+        line_legend_layout = QHBoxLayout(self.line_legend_frame)
+        line_legend_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.cpu_label_line = self.create_legend_item(line_legend_layout, "#E53935", "CPU : 0%")
+        self.ram_label_line = self.create_legend_item(line_legend_layout, "#43A047", "RAM : 0%")
+        self.disk_label_line = self.create_legend_item(line_legend_layout, "#1E88E5", "DISK : 0%")
+        self.line_legend_stack.addWidget(self.line_legend_frame)
 
-        # --- Line Plot Legend (with color dots) ---
-        self.line_legend_frame = ctk.CTkFrame(footer_frame, fg_color="transparent")
-        # Items for line legend
-        cpu_item_line = ctk.CTkFrame(self.line_legend_frame, fg_color="transparent")
-        cpu_item_line.pack(side="left", padx=20)
-        ctk.CTkFrame(cpu_item_line, width=15, height=15, fg_color="#E53935", corner_radius=10).pack(side="left")
-        self.cpu_label_line = ctk.CTkLabel(cpu_item_line, text="CPU : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.cpu_label_line.pack(side="left", padx=10)
-        # ... (similar for RAM and DISK)
-        ram_item_line = ctk.CTkFrame(self.line_legend_frame, fg_color="transparent")
-        ram_item_line.pack(side="left", padx=20)
-        ctk.CTkFrame(ram_item_line, width=15, height=15, fg_color="#43A047", corner_radius=10).pack(side="left")
-        self.ram_label_line = ctk.CTkLabel(ram_item_line, text="RAM : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.ram_label_line.pack(side="left", padx=10)
-        disk_item_line = ctk.CTkFrame(self.line_legend_frame, fg_color="transparent")
-        disk_item_line.pack(side="left", padx=20)
-        ctk.CTkFrame(disk_item_line, width=15, height=15, fg_color="#1E88E5", corner_radius=10).pack(side="left")
-        self.disk_label_line = ctk.CTkLabel(disk_item_line, text="DISK : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.disk_label_line.pack(side="left", padx=10)
+        # --- Scatter Plot Legend (Page 2 of stack) ---
+        self.scatter_legend_frame = QFrame()
+        scatter_legend_layout = QHBoxLayout(self.scatter_legend_frame)
+        scatter_legend_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.cpu_label_scatter = QLabel("CPU : 0%")
+        self.ram_label_scatter = QLabel("RAM : 0%")
+        self.disk_label_scatter = QLabel("DISK : 0%")
+        
+        for label in [self.cpu_label_scatter, self.ram_label_scatter, self.disk_label_scatter]:
+            label.setFont(self.legend_font)
+            label.setStyleSheet("color: #FFFFFF; padding: 0 20px;")
+            scatter_legend_layout.addWidget(label)
+        self.line_legend_stack.addWidget(self.scatter_legend_frame)
 
-        # --- Scatter Plot Legend (plain text) ---
-        self.scatter_legend_frame = ctk.CTkFrame(footer_frame, fg_color="transparent")
-        # Items for scatter legend
-        self.cpu_label_scatter = ctk.CTkLabel(self.scatter_legend_frame, text="CPU : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.cpu_label_scatter.pack(side="left", padx=20)
-        self.ram_label_scatter = ctk.CTkLabel(self.scatter_legend_frame, text="RAM : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.ram_label_scatter.pack(side="left", padx=20)
-        self.disk_label_scatter = ctk.CTkLabel(self.scatter_legend_frame, text="DISK : 0%", font=self.legend_font, text_color="#FFFFFF")
-        self.disk_label_scatter.pack(side="left", padx=20)
+        main_layout.addWidget(footer_frame)
 
-        def update_gui():
-            if not self.monitoring: 
-                return
+    def create_legend_item(self, layout, color, text):
+        """Helper to create the dotted legend items."""
+        item_frame = QFrame()
+        item_layout = QHBoxLayout(item_frame)
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        
+        color_dot = QFrame()
+        color_dot.setFixedSize(15, 15)
+        color_dot.setStyleSheet(f"background-color: {color}; border-radius: 7px;")
+        
+        label = QLabel(text)
+        label.setFont(self.legend_font)
+        label.setStyleSheet("color: #FFFFFF; padding-left: 10px; padding-right: 20px;")
+        
+        item_layout.addWidget(color_dot)
+        item_layout.addWidget(label)
+        layout.addWidget(item_frame)
+        return label
+
+    def init_worker_thread(self):
+        """Create, connect, and start the background data thread."""
+        
+        # 1. Create the worker and thread
+        self.worker = SystemDataWorker()
+        self.thread = QThread()
+        
+        # 2. Move worker to thread
+        self.worker.moveToThread(self.thread)
+        
+        # ======================================================================
+        # STEP 3: CONNECT SIGNALS AND SLOTS
+        # ======================================================================
+        
+        # Connect worker signals to GUI slots
+        self.worker.dataUpdated.connect(self.update_line_plot)
+        self.worker.processDataUpdated.connect(self.update_scatter_plot)
+        
+        # Connect thread started signal to worker's start method
+        self.thread.started.connect(self.worker.start_monitoring)
+        
+        # Connect window's close event to stop the thread
+        self.destroyed.connect(self.stop_worker)
+        
+        # 3. Start the thread
+        self.thread.start()
+
+    def stop_worker(self):
+        """Safely stop the worker and thread."""
+        print("Stopping worker...")
+        self.worker.stop_monitoring()
+        self.thread.quit()
+        self.thread.wait() # Wait for thread to finish
+        print("Worker stopped.")
+        
+    def closeEvent(self, event):
+        """Override close event to stop the thread."""
+        self.stop_worker()
+        event.accept()
+        
+
+    # ==========================================================================
+    # --- GUI UPDATE SLOTS (These receive the data) ---
+    # ==========================================================================
+    
+    @Slot(dict, pd.DataFrame)
+    def update_line_plot(self, metrics, data):
+        """
+        This function is now a SLOT. It only runs when the
+        worker sends new data. It ONLY does drawing.
+        """
+        
+        # Update labels in BOTH legends
+        for label in [self.cpu_label_line, self.cpu_label_scatter]:
+            label.setText(f"CPU : {metrics['cpu']:.0f}%")
+        for label in [self.ram_label_line, self.ram_label_scatter]:
+            label.setText(f"RAM : {metrics['ram']:.0f}%")
+        for label in [self.disk_label_line, self.disk_label_scatter]:
+            label.setText(f"DISK : {metrics['disk']:.0f}%")
             
+        # --- Update Line Plot (Your logic, moved here) ---
+        self.line_ax.clear()
+        
+        if not data.empty:
+            current_time = data['timestamp'].iloc[-1]
+            time_window_ago = current_time - self.display_time_window
+            recent_data = data[data['timestamp'] >= time_window_ago].copy()
+            times = (recent_data['timestamp'] - current_time).values
+            
+            if not recent_data.empty:
+                first_cpu = recent_data['cpu'].iloc[0]
+                first_ram = recent_data['ram'].iloc[0]
+                first_disk = recent_data['disk'].iloc[0]
+                first_time = times[0]
+                
+                if first_time > -self.display_time_window:
+                    baseline_times = [-self.display_time_window, first_time]
+                    self.line_ax.plot(baseline_times, [first_cpu, first_cpu], color='#E53935', 
+                                    linewidth=1.5, alpha=0.4, linestyle='--', label='CPU Baseline')
+                    self.line_ax.plot(baseline_times, [first_ram, first_ram], color='#43A047', 
+                                    linewidth=1.5, alpha=0.4, linestyle='--', label='RAM Baseline')
+                    self.line_ax.plot(baseline_times, [first_disk, first_disk], color='#1E88E5', 
+                                    linewidth=1.5, alpha=0.4, linestyle='--', label='DISK Baseline')
+        else:
+            recent_data = data
+            times = []
+            baseline_times = [-self.display_time_window, 0]
+            self.line_ax.plot(baseline_times, [0, 0], color='#E53935', linewidth=1, alpha=0.3, linestyle='--')
+            self.line_ax.plot(baseline_times, [0, 0], color='#43A047', linewidth=1, alpha=0.3, linestyle='--')
+            self.line_ax.plot(baseline_times, [0, 0], color='#1E88E5', linewidth=1, alpha=0.3, linestyle='--')
+        
+        if len(times) > 5:
             try:
-                metrics = self.monitor_system()
-            except Exception as e:
-                # Handle any errors in monitoring and continue
-                print(f"Monitoring error: {e}")
-                if self.monitoring:
-                    self.root.after(500, update_gui)
-                return
-            # Update labels in BOTH legends
-            for label in [self.cpu_label_line, self.cpu_label_scatter]:
-                label.configure(text=f"CPU : {metrics['cpu']:.0f}%")
-            for label in [self.ram_label_line, self.ram_label_scatter]:
-                label.configure(text=f"RAM : {metrics['ram']:.0f}%")
-            for label in [self.disk_label_line, self.disk_label_scatter]:
-                label.configure(text=f"DISK : {metrics['disk']:.0f}%")
-
-            # --- Update Line Plot with configurable time window ---
-            self.line_ax.clear()
-            
-            # Filter data to last display_time_window seconds only
-            if not self.data.empty:
-                current_time = self.data['timestamp'].iloc[-1]
-                time_window_ago = current_time - self.display_time_window
-                recent_data = self.data[self.data['timestamp'] >= time_window_ago].copy()
-                times = (recent_data['timestamp'] - current_time).values
+                times_smooth = np.linspace(times.min(), times.max(), len(times) + 10)
+                cpu_spline = make_interp_spline(times, recent_data['cpu'], k=2)
+                cpu_smooth = cpu_spline(times_smooth)
+                self.line_ax.plot(times_smooth, cpu_smooth, color='#E53935', linewidth=2.5, 
+                                alpha=0.8, label='CPU')
+                ram_spline = make_interp_spline(times, recent_data['ram'], k=2)
+                ram_smooth = ram_spline(times_smooth)
+                self.line_ax.plot(times_smooth, ram_smooth, color='#43A047', linewidth=2.5, 
+                                alpha=0.8, label='RAM')
+                disk_spline = make_interp_spline(times, recent_data['disk'], k=2)
+                disk_smooth = disk_spline(times_smooth)
+                self.line_ax.plot(times_smooth, disk_smooth, color='#1E88E5', linewidth=2.5, 
+                                alpha=0.8, label='DISK')
                 
-                # Get first entry values for baseline
-                if not recent_data.empty:
-                    first_cpu = recent_data['cpu'].iloc[0]
-                    first_ram = recent_data['ram'].iloc[0]
-                    first_disk = recent_data['disk'].iloc[0]
-                    first_time = times[0]
-                    
-                    # Draw baseline lines from -display_time_window to first data point using first entry values
-                    if first_time > -self.display_time_window:
-                        baseline_times = [-self.display_time_window, first_time]
-                        self.line_ax.plot(baseline_times, [first_cpu, first_cpu], color='#E53935', 
-                                        linewidth=1.5, alpha=0.4, linestyle='--', label='CPU Baseline')
-                        self.line_ax.plot(baseline_times, [first_ram, first_ram], color='#43A047', 
-                                        linewidth=1.5, alpha=0.4, linestyle='--', label='RAM Baseline')
-                        self.line_ax.plot(baseline_times, [first_disk, first_disk], color='#1E88E5', 
-                                        linewidth=1.5, alpha=0.4, linestyle='--', label='DISK Baseline')
-            else:
-                recent_data = self.data
-                times = []
-                # Show zero baseline when no data exists
-                baseline_times = [-self.display_time_window, 0]
-                self.line_ax.plot(baseline_times, [0, 0], color='#E53935', linewidth=1, alpha=0.3, linestyle='--')
-                self.line_ax.plot(baseline_times, [0, 0], color='#43A047', linewidth=1, alpha=0.3, linestyle='--')
-                self.line_ax.plot(baseline_times, [0, 0], color='#1E88E5', linewidth=1, alpha=0.3, linestyle='--')
-            
-            # Moderate smooth curves with reduced interpolation
-            if len(times) > 5:  # Need at least 6 points for gentle splines
-                try:
-                    # Create gentler spline curves with less interpolation
-                    times_smooth = np.linspace(times.min(), times.max(), len(times) + 10)  # Reduced from * 3
-                    
-                    # CPU curve with gentler spline interpolation
-                    cpu_spline = make_interp_spline(times, recent_data['cpu'], k=2)  # Reduced from k=3
-                    cpu_smooth = cpu_spline(times_smooth)
-                    self.line_ax.plot(times_smooth, cpu_smooth, color='#E53935', linewidth=2.5, 
-                                    alpha=0.8, label='CPU')
-                    
-                    # RAM curve with gentler spline interpolation  
-                    ram_spline = make_interp_spline(times, recent_data['ram'], k=2)  # Reduced from k=3
-                    ram_smooth = ram_spline(times_smooth)
-                    self.line_ax.plot(times_smooth, ram_smooth, color='#43A047', linewidth=2.5, 
-                                    alpha=0.8, label='RAM')
-                    
-                    # DISK curve with gentler spline interpolation
-                    disk_spline = make_interp_spline(times, recent_data['disk'], k=2)  # Reduced from k=3
-                    disk_smooth = disk_spline(times_smooth)
-                    self.line_ax.plot(times_smooth, disk_smooth, color='#1E88E5', linewidth=2.5, 
-                                    alpha=0.8, label='DISK')
-                    
-                    # Add lighter fill areas under curves - start from first reading
-                    self.line_ax.fill_between(times_smooth, cpu_smooth, alpha=0.1, color='#E53935')
-                    self.line_ax.fill_between(times_smooth, ram_smooth, alpha=0.1, color='#43A047')
-                    self.line_ax.fill_between(times_smooth, disk_smooth, alpha=0.1, color='#1E88E5')
-                    
-                    # Add smaller data points as markers
-                    self.line_ax.scatter(times, recent_data['cpu'], color='#E53935', s=15, alpha=0.6, zorder=5)
-                    self.line_ax.scatter(times, recent_data['ram'], color='#43A047', s=15, alpha=0.6, zorder=5)
-                    self.line_ax.scatter(times, recent_data['disk'], color='#1E88E5', s=15, alpha=0.6, zorder=5)
-                    
-                except Exception:
-                    # Fallback to regular lines if spline fails
-                    self.line_ax.plot(times, recent_data['cpu'], color='#E53935', linewidth=2, alpha=0.8)
-                    self.line_ax.plot(times, recent_data['ram'], color='#43A047', linewidth=2, alpha=0.8)
-                    self.line_ax.plot(times, recent_data['disk'], color='#1E88E5', linewidth=2, alpha=0.8)
-                    
-                    # Add fill areas for fallback lines too
-                    self.line_ax.fill_between(times, recent_data['cpu'], alpha=0.1, color='#E53935')
-                    self.line_ax.fill_between(times, recent_data['ram'], alpha=0.1, color='#43A047')
-                    self.line_ax.fill_between(times, recent_data['disk'], alpha=0.1, color='#1E88E5')
-            elif len(times) > 1:
-                # Simple lines for fewer data points
-                self.line_ax.plot(times, recent_data['cpu'], color='#E53935', linewidth=2, 
-                                marker='o', markersize=3, alpha=0.8)
-                self.line_ax.plot(times, recent_data['ram'], color='#43A047', linewidth=2, 
-                                marker='s', markersize=3, alpha=0.8)
-                self.line_ax.plot(times, recent_data['disk'], color='#1E88E5', linewidth=2, 
-                                marker='^', markersize=3, alpha=0.8)
+                self.line_ax.fill_between(times_smooth, cpu_smooth, alpha=0.1, color='#E53935')
+                self.line_ax.fill_between(times_smooth, ram_smooth, alpha=0.1, color='#43A047')
+                self.line_ax.fill_between(times_smooth, disk_smooth, alpha=0.1, color='#1E88E5')
                 
-                # Add fill areas even for simple lines
+                self.line_ax.scatter(times, recent_data['cpu'], color='#E53935', s=15, alpha=0.6, zorder=5)
+                self.line_ax.scatter(times, recent_data['ram'], color='#43A047', s=15, alpha=0.6, zorder=5)
+                self.line_ax.scatter(times, recent_data['disk'], color='#1E88E5', s=15, alpha=0.6, zorder=5)
+                
+            except Exception:
+                self.line_ax.plot(times, recent_data['cpu'], color='#E53935', linewidth=2, alpha=0.8)
+                self.line_ax.plot(times, recent_data['ram'], color='#43A047', linewidth=2, alpha=0.8)
+                self.line_ax.plot(times, recent_data['disk'], color='#1E88E5', linewidth=2, alpha=0.8)
                 self.line_ax.fill_between(times, recent_data['cpu'], alpha=0.1, color='#E53935')
                 self.line_ax.fill_between(times, recent_data['ram'], alpha=0.1, color='#43A047')
                 self.line_ax.fill_between(times, recent_data['disk'], alpha=0.1, color='#1E88E5')
-            elif len(times) == 1:
-                # Single data point - show as dot with small fill area
-                self.line_ax.scatter(times, recent_data['cpu'], color='#E53935', s=25, alpha=0.8, zorder=5)
-                self.line_ax.scatter(times, recent_data['ram'], color='#43A047', s=25, alpha=0.8, zorder=5)
-                self.line_ax.scatter(times, recent_data['disk'], color='#1E88E5', s=25, alpha=0.8, zorder=5)
+        elif len(times) > 1:
+            self.line_ax.plot(times, recent_data['cpu'], color='#E53935', linewidth=2, 
+                            marker='o', markersize=3, alpha=0.8)
+            self.line_ax.plot(times, recent_data['ram'], color='#43A047', linewidth=2, 
+                            marker='s', markersize=3, alpha=0.8)
+            self.line_ax.plot(times, recent_data['disk'], color='#1E88E5', linewidth=2, 
+                            marker='^', markersize=3, alpha=0.8)
+            self.line_ax.fill_between(times, recent_data['cpu'], alpha=0.1, color='#E53935')
+            self.line_ax.fill_between(times, recent_data['ram'], alpha=0.1, color='#43A047')
+            self.line_ax.fill_between(times, recent_data['disk'], alpha=0.1, color='#1E88E5')
+        elif len(times) == 1:
+            self.line_ax.scatter(times, recent_data['cpu'], color='#E53935', s=25, alpha=0.8, zorder=5)
+            self.line_ax.scatter(times, recent_data['ram'], color='#43A047', s=25, alpha=0.8, zorder=5)
+            self.line_ax.scatter(times, recent_data['disk'], color='#1E88E5', s=25, alpha=0.8, zorder=5)
+            
+            point_width = self.display_time_window * 0.02
+            self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
+                                    [recent_data['cpu'].iloc[0], recent_data['cpu'].iloc[0]], 
+                                    alpha=0.1, color='#E53935')
+            self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
+                                    [recent_data['ram'].iloc[0], recent_data['ram'].iloc[0]], 
+                                    alpha=0.1, color='#43A047')
+            self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
+                                    [recent_data['disk'].iloc[0], recent_data['disk'].iloc[0]], 
+                                    alpha=0.1, color='#1E88E5')
+        
+        self.line_ax.set_xlim(-self.display_time_window, 0)
+        self.line_ax.set_xlabel("Timeline", color='black', fontsize=12)
+        self.line_ax.set_ylabel("Usage (%)", color='black', fontsize=12)
+        self.line_ax.set_ylim(0, 100)
+        for spine in ['top', 'right']: self.line_ax.spines[spine].set_visible(False)
+        self.line_ax.spines['bottom'].set_color('black')
+        self.line_ax.spines['left'].set_color('black') # Make left spine visible
+        self.line_ax.tick_params(axis='y', colors='black')
+        self.line_ax.tick_params(axis='x', colors='black')
+        
+        # Set all plot text/lines to black
+        for text in self.line_ax.get_xticklabels() + self.line_ax.get_yticklabels():
+            text.set_color('black')
+        self.line_ax.xaxis.label.set_color('black')
+        self.line_ax.yaxis.label.set_color('black')
+        
+        self.line_fig.tight_layout(pad=0.5)
+        self.line_canvas.draw()
+
+
+    @Slot(pd.DataFrame)
+    def update_scatter_plot(self, process_df):
+        """
+        This function is now a SLOT. It only runs when the
+        worker sends new process data.
+        """
+        
+        # --- Update Scatter Plot (Your logic, moved here) ---
+        self.scatter_ax.clear()
+        
+        if not process_df.empty:
+            user_cpu_summary = process_df.groupby('username')['cpu_percent'].sum().reset_index()
+            user_threshold = 1.0
+            relevant_users = user_cpu_summary[user_cpu_summary['cpu_percent'] > user_threshold]['username'].tolist()
+
+            filtered_df = process_df[process_df['username'].isin(relevant_users)].copy()
+            
+            process_threshold = 0.5
+            filtered_df = filtered_df[filtered_df['cpu_percent'] >= process_threshold]
+
+            if not filtered_df.empty:
+                filtered_df = filtered_df.sort_values(by=['username', 'cpu_percent'], ascending=[True, False]).reset_index(drop=True)
                 
-                # Add small fill areas around single points
-                point_width = self.display_time_window * 0.02  # 2% of time window
-                self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
-                                        [recent_data['cpu'].iloc[0], recent_data['cpu'].iloc[0]], 
-                                        alpha=0.1, color='#E53935')
-                self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
-                                        [recent_data['ram'].iloc[0], recent_data['ram'].iloc[0]], 
-                                        alpha=0.1, color='#43A047')
-                self.line_ax.fill_between([times[0] - point_width, times[0] + point_width], 
-                                        [recent_data['disk'].iloc[0], recent_data['disk'].iloc[0]], 
-                                        alpha=0.1, color='#1E88E5')
-            
-            # Set x-axis to show last display_time_window seconds
-            self.line_ax.set_xlim(-self.display_time_window, 0)
-            
-            self.line_ax.set_xlabel("Timeline", color='black', fontsize=12)
-            self.line_ax.set_ylabel("Usage (%)", color='black', fontsize=12)
-            self.line_ax.set_ylim(0, 100)
-            for spine in ['top', 'right']: self.line_ax.spines[spine].set_visible(False)
-            self.line_ax.spines['bottom'].set_color('black')
-            # self.line_ax.set_yticklabels([]); self.line_ax.set_xticklabels([])
-            # self.line_ax.tick_params(axis='y', length=5, color='black'); self.line_ax.tick_params(axis='x', length=0)
-            self.line_ax.tick_params(axis='y', colors='black')
-            self.line_ax.tick_params(axis='x', colors='black')
-            self.line_fig.tight_layout(pad=0.5)
-            self.line_canvas.draw()
+                users = filtered_df['username'].unique()
+                x_vals, y_vals, colors, sizes, x_tick_labels, process_names = [], [], [], [], [], []
+                user_colors = ['#E53935', '#43A047', '#1E88E5', '#FF9800', '#9C27B0', '#00BCD4', '#795548', '#607D8B']
+                background_colors = ['#FFEBEE', '#E8F5E8', '#E3F2FD', '#FFF3E0', '#F3E5F5', '#E0F2F1', '#EFEBE9', '#ECEFF1']
 
-            # --- Update Enhanced Scatter Plot ---
-            self.scatter_ax.clear()
-            process_df = self.get_process_data()
-            
-            if not process_df.empty:
-                # Filter processes with meaningful CPU usage
-                user_cpu_summary = process_df.groupby('username')['cpu_percent'].sum().reset_index()
-                user_threshold = 1.0  # Lowered threshold to show more users (0.5)
-                relevant_users = user_cpu_summary[user_cpu_summary['cpu_percent'] > user_threshold]['username'].tolist()
+                current_x_offset = 0
+                for i, user in enumerate(users):
+                    user_procs = filtered_df[filtered_df['username'] == user]
+                    user_color = user_colors[i % len(user_colors)]
+                    bg_color = background_colors[i % len(background_colors)]
+                    user_x_indices = list(range(current_x_offset, current_x_offset + len(user_procs)))
+                    
+                    x_vals.extend(user_x_indices)
+                    y_vals.extend(user_procs['cpu_percent'].tolist())
+                    process_names.extend(user_procs['name'].tolist())
+                    
+                    for cpu_val in user_procs['cpu_percent']:
+                        colors.append(user_color)
+                        size = max(20, min(100, cpu_val * 3))
+                        sizes.append(size)
+                    
+                    if not user_procs.empty:
+                        center_x_pos = current_x_offset + (len(user_procs) - 1) / 2
+                        x_tick_labels.append((center_x_pos, user))
+                        
+                        # Add background rectangles
+                        rect = mpatches.Rectangle((current_x_offset - 0.5, 0),
+                                            len(user_procs), 100, # Use 100 for height
+                                            facecolor=bg_color, edgecolor='none', 
+                                            alpha=0.3, zorder=0)
+                        self.scatter_ax.add_patch(rect)
 
-                filtered_df = process_df[process_df['username'].isin(relevant_users)].copy()
+                    current_x_offset += len(user_procs) + 1
+
+                self.scatter_ax.scatter(x_vals, y_vals, c=colors, s=sizes, alpha=0.7, edgecolors='white', linewidth=0.5, zorder=2)
                 
-                process_threshold = 0.5  # Lowered to show more processes (0.1)
-                filtered_df = filtered_df[filtered_df['cpu_percent'] >= process_threshold]
+                for j, (x, y) in enumerate(zip(x_vals, y_vals)):
+                    name = process_names[j][:9] + '...' if len(process_names[j]) > 12 else process_names[j]
+                    y_offset = 8 if y > 50 else -15
+                    v_align = 'bottom' if y > 50 else 'top'
+                    self.scatter_ax.annotate(name, (x, y), textcoords="offset points",
+                                            xytext=(0, y_offset), ha='center', va=v_align,
+                                            fontsize=6, color='black', alpha=0.8, weight='bold')
 
-                if not filtered_df.empty:
-                    filtered_df = filtered_df.sort_values(by=['username', 'cpu_percent'], ascending=[True, False]).reset_index(drop=True)
-
-                    users = filtered_df['username'].unique()
-                    x_vals = []
-                    y_vals = []
-                    colors = []
-                    sizes = []
-                    x_tick_labels = []
-                    process_names = []
-                    
-                    # Enhanced color palette for different users
-                    user_colors = ['#E53935', '#43A047', '#1E88E5', '#FF9800', '#9C27B0', '#00BCD4', '#795548', '#607D8B']
-                    background_colors = ['#FFEBEE', '#E8F5E8', '#E3F2FD', '#FFF3E0', '#F3E5F5', '#E0F2F1', '#EFEBE9', '#ECEFF1']
-
-                    # Clear existing patches
-                    for rect in self.scatter_ax.patches:
-                        rect.remove()
-
-                    current_x_offset = 0
-                    for i, user in enumerate(users):
-                        user_procs = filtered_df[filtered_df['username'] == user]
-                        user_color = user_colors[i % len(user_colors)]
-                        bg_color = background_colors[i % len(background_colors)]
-                        
-                        user_x_indices = list(range(current_x_offset, current_x_offset + len(user_procs)))
-                        
-                        x_vals.extend(user_x_indices)
-                        y_vals.extend(user_procs['cpu_percent'].tolist())
-                        process_names.extend(user_procs['name'].tolist())
-                        
-                        # Color and size based on CPU usage
-                        for cpu_val in user_procs['cpu_percent']:
-                            colors.append(user_color)
-                            # Size based on CPU usage (20-100 range)
-                            size = max(20, min(100, cpu_val * 3))
-                            sizes.append(size)
-                        
-                        if not user_procs.empty:
-                            center_x_pos = current_x_offset + (len(user_procs) - 1) / 2
-                            x_tick_labels.append((center_x_pos, user))
-
-                            # Add background rectangles with rounded appearance
-                            rect = plt.Rectangle((current_x_offset - 0.5, self.scatter_ax.get_ylim()[0] if self.scatter_ax.get_ylim()[0] != 0 else 0),
-                                               len(user_procs) + 0.5,
-                                               100,  # Fixed height for background
-                                               facecolor=bg_color, edgecolor='none', alpha=0.3, zorder=0)
-                            self.scatter_ax.add_patch(rect)
-
-                        current_x_offset += len(user_procs) + 1
-
-                    # Enhanced scatter plot with variable colors and sizes
-                    scatter = self.scatter_ax.scatter(x_vals, y_vals, c=colors, s=sizes, alpha=0.7, edgecolors='white', linewidth=0.5)
-                    
-                    # Add process name annotations with better positioning
-                    for j, (x, y) in enumerate(zip(x_vals, y_vals)):
-                        name = process_names[j]
-                        if len(name) > 12:
-                            name = name[:9] + '...'
-                        
-                        # Position text above higher CPU usage points, below lower ones
-                        y_offset = 8 if y > 50 else -15
-                        v_align = 'bottom' if y > 50 else 'top'
-                        
-                        self.scatter_ax.annotate(name, 
-                                               (x, y), 
-                                               textcoords="offset points",
-                                               xytext=(0, y_offset),
-                                               ha='center',
-                                               va=v_align,
-                                               fontsize=6,
-                                               color='black',
-                                               alpha=0.8,
-                                               weight='bold')
-
-                    # Dynamic y-axis scaling
-                    max_cpu = max(y_vals) if y_vals else 0
-                    self.scatter_ax.set_ylim(0, max(max_cpu * 1.3, 10))
-                    
-                    # Set x-axis labels
-                    tick_positions = [pos for pos, _ in x_tick_labels]
-                    tick_labels_text = [label for _, label in x_tick_labels]
-                    
-                    self.scatter_ax.set_xticks(tick_positions)
-                    self.scatter_ax.set_xticklabels(tick_labels_text, rotation=0, ha="center", fontsize=9, color='black')
-                    
-
-                    # self.scatter_ax.set_xlabel("Users", color='black', fontsize=10)
-                    # self.scatter_ax.set_ylabel("CPU Usage (%)", color='black', fontsize=10)
-                    self.scatter_ax.tick_params(axis='y', colors='black')
-                    self.scatter_ax.tick_params(axis='x', colors='black')
-                    
-                    # Remove top and right spines (borders)
-                    for spine in ['top', 'right']: 
-                        self.scatter_ax.spines[spine].set_visible(False)
-                    self.scatter_ax.spines['bottom'].set_color('black')
-                    self.scatter_ax.spines['left'].set_color('black')
-                    
-                    # Format y-axis labels to show float values
-                    from matplotlib.ticker import FormatStrFormatter
-                    self.scatter_ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
-                    
-                    # Add grid for better readability
-                    self.scatter_ax.grid(True, alpha=0.3, linestyle='--', color='gray')
-                    
-                else:
-                    # Show message when no processes meet threshold
-                    self.scatter_ax.text(0.5, 0.5, 'No significant processes found', 
-                                       transform=self.scatter_ax.transAxes, ha='center', va='center',
-                                       fontsize=12, color='gray', alpha=0.7)
+                max_cpu = max(y_vals) if y_vals else 0
+                self.scatter_ax.set_ylim(0, max(max_cpu * 1.3, 10))
+                
+                tick_positions = [pos for pos, _ in x_tick_labels]
+                tick_labels_text = [label for _, label in x_tick_labels]
+                self.scatter_ax.set_xticks(tick_positions)
+                self.scatter_ax.set_xticklabels(tick_labels_text, rotation=0, ha="center", fontsize=9, color='black')
+                
+                self.scatter_ax.tick_params(axis='y', colors='black')
+                for spine in ['top', 'right']: self.scatter_ax.spines[spine].set_visible(False)
+                self.scatter_ax.spines['bottom'].set_color('black')
+                self.scatter_ax.spines['left'].set_color('black')
+                self.scatter_ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
+                self.scatter_ax.grid(True, alpha=0.3, linestyle='--', color='gray', zorder=1)
+                
             else:
-                # Show message when no process data available
-                self.scatter_ax.text(0.5, 0.5, 'Loading process data...', 
-                                   transform=self.scatter_ax.transAxes, ha='center', va='center',
-                                   fontsize=12, color='gray', alpha=0.7)
-            
-            self.scatter_fig.tight_layout(pad=0.5)
-            self.scatter_canvas.draw()
+                self.scatter_ax.text(0.5, 0.5, 'No significant processes found', 
+                                    transform=self.scatter_ax.transAxes, ha='center', va='center',
+                                    fontsize=12, color='gray', alpha=0.7)
+        else:
+            self.scatter_ax.text(0.5, 0.5, 'Loading process data...', 
+                                transform=self.scatter_ax.transAxes, ha='center', va='center',
+                                fontsize=12, color='gray', alpha=0.7)
+        
+        # Set all plot text/lines to black
+        for text in self.scatter_ax.get_xticklabels() + self.scatter_ax.get_yticklabels():
+            text.set_color('black')
+        
+        self.scatter_fig.tight_layout(pad=0.5)
+        self.scatter_canvas.draw()
 
-            # Safe scheduling of next update
-            if self.monitoring and self.root and self.root.winfo_exists():
-                try:
-                    self.root.after(500, update_gui)
-                except Exception:
-                    pass  # Ignore tkinter errors during shutdown
+    # --- GUI Control Slots ---
+    
+    @Slot()
+    def switch_view(self, index):
+        """Switches the main view and legend."""
+        self.plot_stack.setCurrentIndex(index)
+        self.line_legend_stack.setCurrentIndex(index)
+        
+        if index == 0:
+            # "Usage" view
+            self.usage_button.setFont(self.nav_font_bold)
+            self.usage_button.setStyleSheet(self.usage_button.styleSheet() + "color: #FFFFFF;")
+            self.scatter_button.setFont(self.nav_font_normal)
+            self.scatter_button.setStyleSheet(self.scatter_button.styleSheet() + "color: #A0A0A0;")
+        else:
+            # "Scatter" view
+            self.usage_button.setFont(self.nav_font_normal)
+            self.usage_button.setStyleSheet(self.usage_button.styleSheet() + "color: #A0A0A0;")
+            self.scatter_button.setFont(self.nav_font_bold)
+            self.scatter_button.setStyleSheet(self.scatter_button.styleSheet() + "color: #FFFFFF;")
 
-        # Initialize the view
-        self.monitoring = True
-        self.switch_view("usage")
-        self.root.after(100, self.update_font_size)
-        update_gui()
-        self.root.mainloop()
+
+# ==============================================================================
+# --- APPLICATION ENTRY POINT ---
+# ==============================================================================
 
 if __name__ == "__main__":
-    monitor = SystemMonitor()
-    monitor.display_gui()
+    # Handle DPI scaling
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except:
+            pass
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

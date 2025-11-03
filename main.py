@@ -13,7 +13,6 @@ except ImportError:
 
 from io import StringIO
 from io import TextIOWrapper
-from system_monitor import SystemMonitor
 
 from animations import Animations
 anim = Animations()
@@ -33,9 +32,33 @@ def find_in_path(command):
                 return full_path_exe
     return None
 
+# REPLACE IT WITH THIS NEW FUNCTION
 def monitor_system(*args):
-    monitor = SystemMonitor()
-    monitor.display_gui()
+    """
+    Launches the PySide6 system monitor in a new,
+    non-blocking process.
+    """
+    try:
+        # Get the path to the current Python executable
+        python_executable = sys.executable 
+        
+        # Get the directory of the currently running main.py script
+        script_dir = os.path.dirname(__file__)
+        
+        # Get the full path to the system_monitor.py script
+        monitor_script_path = os.path.join(script_dir, "system_monitor.py")
+
+        # Use Popen to launch it as a new process and NOT wait for it.
+        # This is the non-blocking part.
+        subprocess.Popen([python_executable, monitor_script_path])
+        
+        # Return a message to the CLI
+        return "System monitor launched in a separate window.\n"
+        
+    except FileNotFoundError:
+        return f"Error: Could not find '{monitor_script_path}'.\n"
+    except Exception as e:
+        return f"Failed to launch system monitor: {e}\n"
 
 def cd_command(*args):
     if not args:
