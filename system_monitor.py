@@ -4,6 +4,7 @@ import psutil
 import pandas as pd
 import numpy as np
 import time
+import platform 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from scipy.interpolate import make_interp_spline
@@ -61,12 +62,25 @@ class SystemDataWorker(QObject):
     # Define signals that will carry the new data
     dataUpdated = Signal(dict, pd.DataFrame)
     processDataUpdated = Signal(pd.DataFrame)
+    systemInfoUpdated = Signal(dict)
+    anomaliesFound = Signal(list)
+    networkInfoUpdated = Signal(dict)
     
     def __init__(self, max_history=60):
         super().__init__()
         self.data = pd.DataFrame(columns=['timestamp', 'cpu', 'ram', 'disk'])
         self.max_history = max_history
         self.monitoring = False
+
+    # --- Store network baseline ---
+        self.last_net_io = psutil.net_io_counters()
+        
+        # --- Get system info once ---
+        self.system_info = {
+            'hostname': platform.node(),
+            'os': f"{platform.system()} {platform.release()}",
+            'kernel': platform.version().split(' ')[0] # Gets kernel version
+        }
 
     def start_monitoring(self):
         """Starts the monitoring loop."""
@@ -116,6 +130,29 @@ class SystemDataWorker(QObject):
             # EMIT SIGNAL 2
             self.processDataUpdated.emit(process_df)
             
+            # --- 3. ADD NETWORK DATA COLLECTION ---
+            new_net_io = psutil.net_io_counters()
+            network_stats = {
+                'sent_rate': new_net_io.bytes_sent - self.last_net_io.bytes_sent,
+                'recv_rate': new_net_io.bytes_recv - self.last_net_io.bytes_recv
+            }
+            self.last_net_io = new_net_io # Update baseline for next cycle
+
+            # EMIT SIGNAL 3 (New)
+            self.networkInfoUpdated.emit(network_stats)
+
+            # --- 4. CHECK FOR ANOMALIES (PLACEHOLDER) ---
+            # This is where your future logic will go.
+            # For now, we send dummy data to test the UI.
+            test_anomalies = [
+                {'name': 'sysmond', 'desc': 'CPU consumption is in unusual range.', 'level': 'safe'},
+                {'name': 'some_app', 'desc': 'CPU consumption is in unusual range.', 'level': 'critical'},
+                {'name': 'another_app', 'desc': 'Unusual memory usage.', 'level': 'safe'},
+            ]
+
+            # EMIT SIGNAL 4 (New)
+            self.anomaliesFound.emit(test_anomalies)
+
         except Exception as e:
             print(f"Monitoring error: {e}")
 
@@ -193,10 +230,12 @@ class MainWindow(QMainWindow):
         
         self.usage_button = QPushButton("SYSTEM USAGE")
         self.scatter_button = QPushButton("SCATTER PLOT")
-        
+        self.anomaly_button = QPushButton("ANOMALY")
+
         # Connect buttons to the switch_view slot
         self.usage_button.clicked.connect(lambda: self.switch_view(0))
         self.scatter_button.clicked.connect(lambda: self.switch_view(1))
+        self.anomaly_button.clicked.connect(lambda: self.switch_view(2))
 
         # Apply stylesheet for buttons (replaces configure)
         button_style = """
@@ -209,9 +248,11 @@ class MainWindow(QMainWindow):
         """
         self.usage_button.setStyleSheet(button_style)
         self.scatter_button.setStyleSheet(button_style)
+        self.anomaly_button.setStyleSheet(button_style)
 
         nav_layout.addWidget(self.usage_button)
         nav_layout.addWidget(self.scatter_button)
+        nav_layout.addWidget(self.anomaly_button)
         
         main_layout.addWidget(nav_frame)
 
@@ -257,16 +298,62 @@ class MainWindow(QMainWindow):
         
         self.plot_stack.addWidget(self.scatter_plot_widget)
 
-        # --- Footer Legend Area ---
+        # --- Page 3: Anomaly List ---
+        self.anomaly_page_widget = QWidget()
+        anomaly_page_layout = QVBoxLayout(self.anomaly_page_widget)
+        anomaly_page_layout.setContentsMargins(20, 5, 20, 5)
+
+        # This is the main gray rounded frame
+        self.anomaly_frame = QFrame()
+        self.anomaly_frame.setStyleSheet("background-color: #F0F0F0; border-radius: 20px;")
+        anomaly_page_layout.addWidget(self.anomaly_frame)
+
+        # We will put all anomaly "cards" inside this layout
+        self.anomaly_card_container_layout = QVBoxLayout(self.anomaly_frame)
+        self.anomaly_card_container_layout.setContentsMargins(15, 15, 15, 15)
+        self.anomaly_card_container_layout.setAlignment(Qt.AlignmentFlag.AlignTop) # New cards stack from top
+
+        # Add a placeholder label for now
+        self.no_anomalies_label = QLabel("No anomalies detected.")
+        self.no_anomalies_label.setFont(QFont("Arial", 12))
+        self.no_anomalies_label.setStyleSheet("color: #888888;")
+        self.no_anomalies_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.anomaly_card_container_layout.addWidget(self.no_anomalies_label)
+
+        # Add this new page to the stack
+        self.plot_stack.addWidget(self.anomaly_page_widget)
+        
+        # --- Footer Area (SysInfo, Legend, Network) ---
         footer_frame = QFrame(self)
-        footer_frame.setFixedHeight(70)
+        footer_frame.setFixedHeight(80) # Made it a bit taller
         footer_layout = QHBoxLayout(footer_frame)
-        footer_layout.setContentsMargins(10, 10, 10, 10)
+        footer_layout.setContentsMargins(25, 10, 25, 10) # Added horizontal margin
+
+        # --- 1. System Info Panel (Left) ---
+        sys_info_frame = QFrame()
+        sys_info_layout = QVBoxLayout(sys_info_frame)
+        sys_info_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         
-        # --- Line Plot Legend (Page 1 of stack) ---
+        sys_title = QLabel("SYSTEM INFORMATION")
+        sys_title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        sys_title.setStyleSheet("color: #FFFFFF; padding-bottom: 5px;")
+        
+        self.hostname_label = QLabel("Hostname: ...")
+        self.os_label = QLabel("OS: ...")
+        self.kernel_label = QLabel("Kernel: ...")
+        
+        sys_info_layout.addWidget(sys_title)
+        for label in [self.hostname_label, self.os_label, self.kernel_label]:
+            label.setFont(QFont("Arial", 9))
+            label.setStyleSheet("color: #A0A0A0;")
+            sys_info_layout.addWidget(label)
+
+        # --- 2. Legend (Center) ---
+        # This is your existing QStackedWidget for the legends
         self.line_legend_stack = QStackedWidget()
-        footer_layout.addWidget(self.line_legend_stack)
-        
+        self.line_legend_stack.setStyleSheet("background-color: transparent;")
+
+        # --- Line Plot Legend (Page 1 of stack) ---
         self.line_legend_frame = QFrame()
         line_legend_layout = QHBoxLayout(self.line_legend_frame)
         line_legend_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -290,6 +377,33 @@ class MainWindow(QMainWindow):
             label.setStyleSheet("color: #FFFFFF; padding: 0 20px;")
             scatter_legend_layout.addWidget(label)
         self.line_legend_stack.addWidget(self.scatter_legend_frame)
+        
+        # --- Anomaly Legend (Page 3 of stack) ---
+        self.anomaly_legend_frame = QFrame()
+        self.line_legend_stack.addWidget(self.anomaly_legend_frame)
+        
+        # --- 3. Network Panel (Right) ---
+        net_info_frame = QFrame()
+        net_info_layout = QVBoxLayout(net_info_frame)
+        net_info_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        net_title = QLabel("NETWORK (per 0.5s)")
+        net_title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        net_title.setStyleSheet("color: #FFFFFF; padding-bottom: 5px;")
+        
+        self.sent_label = QLabel("Sent: ...")
+        self.recv_label = QLabel("Recv: ...")
+        
+        net_info_layout.addWidget(net_title)
+        for label in [self.sent_label, self.recv_label]:
+            label.setFont(QFont("Arial", 9))
+            label.setStyleSheet("color: #A0A0A0;")
+            net_info_layout.addWidget(label)
+
+        # --- Add all three panels to the footer layout ---
+        footer_layout.addWidget(sys_info_frame, 1, Qt.AlignmentFlag.AlignLeft)
+        footer_layout.addWidget(self.line_legend_stack, 2, Qt.AlignmentFlag.AlignCenter)
+        footer_layout.addWidget(net_info_frame, 1, Qt.AlignmentFlag.AlignRight)
 
         main_layout.addWidget(footer_frame)
 
@@ -329,7 +443,9 @@ class MainWindow(QMainWindow):
         # Connect worker signals to GUI slots
         self.worker.dataUpdated.connect(self.update_line_plot)
         self.worker.processDataUpdated.connect(self.update_scatter_plot)
-        
+        self.worker.systemInfoUpdated.connect(self.update_system_info)
+        self.worker.networkInfoUpdated.connect(self.update_network_info)
+        self.worker.anomaliesFound.connect(self.update_anomaly_tab)
         # Connect thread started signal to worker's start method
         self.thread.started.connect(self.worker.start_monitoring)
         
@@ -352,11 +468,36 @@ class MainWindow(QMainWindow):
         self.stop_worker()
         event.accept()
         
-
+    def format_bytes(self, size):
+        """Helper to format byte rates into readable strings."""
+        if size < 1024:
+            return f"{size} B/s"
+        elif size < 1024**2:
+            return f"{size/1024:.1f} KB/s"
+        else:
+            return f"{size/1024**2:.1f} MB/s"
+        
     # ==========================================================================
     # --- GUI UPDATE SLOTS (These receive the data) ---
     # ==========================================================================
     
+    @Slot(dict)
+    def update_system_info(self, info):
+        """Receives system info (hostname, os, etc.) ONCE."""
+        self.hostname_label.setText(f"Hostname: {info['hostname']}")
+        self.os_label.setText(f"OS: {info['os']}")
+        self.kernel_label.setText(f"Kernel: {info['kernel']}")
+
+    @Slot(dict)
+    def update_network_info(self, net_stats):
+        """Receives network data every cycle."""
+        # We multiply by 2 because our interval is 500ms (0.5s)
+        sent_per_sec = net_stats['sent_rate'] * 2
+        recv_per_sec = net_stats['recv_rate'] * 2
+        
+        self.sent_label.setText(f"Sent: {self.format_bytes(sent_per_sec)}")
+        self.recv_label.setText(f"Recv: {self.format_bytes(recv_per_sec)}")
+
     @Slot(dict, pd.DataFrame)
     def update_line_plot(self, metrics, data):
         """
@@ -579,25 +720,135 @@ class MainWindow(QMainWindow):
         self.scatter_canvas.draw()
 
     # --- GUI Control Slots ---
-    
+
     @Slot()
     def switch_view(self, index):
         """Switches the main view and legend."""
         self.plot_stack.setCurrentIndex(index)
         self.line_legend_stack.setCurrentIndex(index)
         
+        # Reset all buttons to normal
+        self.usage_button.setFont(self.nav_font_normal)
+        self.usage_button.setStyleSheet(self.usage_button.styleSheet() + "color: #A0A0A0;")
+        self.scatter_button.setFont(self.nav_font_normal)
+        self.scatter_button.setStyleSheet(self.scatter_button.styleSheet() + "color: #A0A0A0;")
+        self.anomaly_button.setFont(self.nav_font_normal)
+        self.anomaly_button.setStyleSheet(self.anomaly_button.styleSheet() + "color: #A0A0A0;")
+
+        # Set the active button to bold/white
         if index == 0:
             # "Usage" view
             self.usage_button.setFont(self.nav_font_bold)
             self.usage_button.setStyleSheet(self.usage_button.styleSheet() + "color: #FFFFFF;")
-            self.scatter_button.setFont(self.nav_font_normal)
-            self.scatter_button.setStyleSheet(self.scatter_button.styleSheet() + "color: #A0A0A0;")
-        else:
+        elif index == 1:
             # "Scatter" view
-            self.usage_button.setFont(self.nav_font_normal)
-            self.usage_button.setStyleSheet(self.usage_button.styleSheet() + "color: #A0A0A0;")
             self.scatter_button.setFont(self.nav_font_bold)
             self.scatter_button.setStyleSheet(self.scatter_button.styleSheet() + "color: #FFFFFF;")
+        elif index == 2:
+            # "Anomaly" view
+            self.anomaly_button.setFont(self.nav_font_bold)
+            self.anomaly_button.setStyleSheet(self.anomaly_button.styleSheet() + "color: #FFFFFF;")
+    
+    
+
+    def clear_layout(self, layout):
+        """Removes all widgets from a layout."""
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            else:
+                self.clear_layout(item.layout())
+    
+
+    @Slot(list)
+    def update_anomaly_tab(self, anomalies):
+        """Receives the list of anomalies and updates the UI."""
+
+        # Clear all old anomaly cards
+        self.clear_layout(self.anomaly_card_container_layout)
+
+        if not anomalies:
+            # Show the "No anomalies" label if the list is empty
+            self.no_anomalies_label = QLabel("No anomalies detected.")
+            self.no_anomalies_label.setFont(QFont("Arial", 12))
+            self.no_anomalies_label.setStyleSheet("color: #888888;")
+            self.no_anomalies_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.anomaly_card_container_layout.addWidget(self.no_anomalies_label)
+            return
+
+        # --- Styles for the cards ---
+        card_style_sheet = """
+            QFrame {
+                background-color: #DCDCDC;
+                border-radius: 10px;
+                border: 1px solid #C0C0C0;
+            }
+        """
+        title_font = QFont("Arial", 12, QFont.Weight.Bold)
+        desc_font = QFont("Arial", 10)
+
+        box_font = QFont("Arial", 8, QFont.Weight.Bold)
+        safe_box_style = "background-color: #C8E6C9; color: #2E7D32; border-radius: 5px; padding: 8px;"
+        critical_box_style = "background-color: #FFCDD2; color: #C62828; border-radius: 5px; padding: 8px;"
+
+        # --- Create a card for each anomaly ---
+        for anomaly in anomalies:
+            # Main card frame
+            card_frame = QFrame()
+            card_frame.setStyleSheet(card_style_sheet)
+            card_frame.setFixedHeight(100)
+
+            card_layout = QHBoxLayout(card_frame)
+            card_layout.setContentsMargins(15, 10, 15, 10)
+
+            # Left side (text)
+            text_layout = QVBoxLayout()
+            text_layout.setSpacing(5)
+
+            title_label = QLabel(anomaly['name'])
+            title_label.setFont(title_font)
+            title_label.setStyleSheet("color: #000000;")
+
+            desc_label = QLabel(anomaly['desc'])
+            desc_label.setFont(desc_font)
+            desc_label.setStyleSheet("color: #333333;")
+
+            text_layout.addWidget(title_label)
+            text_layout.addWidget(desc_label)
+            text_layout.addStretch() # Pushes text to the top
+
+            # Right side (status box)
+            box_layout = QVBoxLayout()
+            box_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            status_box = QLabel()
+            status_box.setFont(box_font)
+            status_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_box.setWordWrap(True)
+            status_box.setFixedWidth(120)
+
+            if anomaly['level'] == 'safe':
+                status_box.setText("Process is not important can be removed for CPU RELAXATION")
+                status_box.setStyleSheet(safe_box_style)
+            else: # 'critical'
+                status_box.setText("Process is important can not be removed for CPU RELAXATION")
+                status_box.setStyleSheet(critical_box_style)
+
+            box_layout.addWidget(status_box)
+
+            # Add layouts to card
+            card_layout.addLayout(text_layout, 3) # Give text 3/4 of the space
+            card_layout.addLayout(box_layout, 1)  # Give box 1/4 of the space
+
+            # Add the finished card to the main container
+            self.anomaly_card_container_layout.addWidget(card_frame)
+
+        # Add a final "stretch" to push all cards to the top
+        self.anomaly_card_container_layout.addStretch()
 
 
 # ==============================================================================
@@ -605,15 +856,7 @@ class MainWindow(QMainWindow):
 # ==============================================================================
 
 if __name__ == "__main__":
-    # Handle DPI scaling
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except:
-            pass
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-    
+        
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
