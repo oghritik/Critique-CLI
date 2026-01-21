@@ -65,6 +65,7 @@ class SystemDataWorker(QObject):
     systemInfoUpdated = Signal(dict)
     anomaliesFound = Signal(list)
     networkInfoUpdated = Signal(dict)
+    killProcess = Signal(int)
     
     def __init__(self, max_history=60):
         super().__init__()
@@ -81,6 +82,32 @@ class SystemDataWorker(QObject):
             'os': f"{platform.system()} {platform.release()}",
             'kernel': platform.version().split(' ')[0] # Gets kernel version
         }
+
+        self.TOP_X = 5
+        self.top_processes = set()
+
+        # CPU history for sustained usage check
+        self.cpu_history = {}   # pid -> [(timestamp, cpu), ...]
+
+        # Sustained CPU window (seconds)
+        self.SUSTAIN_TIME = 10
+
+        self.expected_cpu = {
+            'browser': 30,
+            'video': 80,
+            'screensaver': 5,
+            'default': 20
+        }
+    
+    def get_expected_cpu(self, process_name):
+        name = process_name.lower()
+        if 'chrome' in name or 'firefox' in name:
+            return self.expected_cpu['browser']
+        if 'ffmpeg' in name or 'encoder' in name:
+            return self.expected_cpu['video']
+        if 'screen' in name:
+            return self.expected_cpu['screensaver']
+        return self.expected_cpu['default']
 
     def start_monitoring(self):
         """Starts the monitoring loop."""
@@ -126,10 +153,89 @@ class SystemDataWorker(QObject):
 
             # 2. Collect process data
             process_df = self.get_process_data()
+
+            if not process_df.empty:
+                top_df = process_df.sort_values(
+                    by='cpu_percent', ascending=False
+                ).head(self.TOP_X)
+                self.top_processes = set(top_df['pid'].tolist())
+            else:
+                top_df = pd.DataFrame()
+                self.top_processes = set()
             
             # EMIT SIGNAL 2
             self.processDataUpdated.emit(process_df)
+
+            current_time = time.time()
+            sustained_high = set()
+
+            for _, row in top_df.iterrows():
+                pid = row['pid']
+                cpu = row['cpu_percent']
+                expected = self.get_expected_cpu(row['name'])
+
+                if pid not in self.cpu_history:
+                    self.cpu_history[pid] = []
+
+                self.cpu_history[pid].append((current_time, cpu))
+
+                # Keep only last 10 seconds
+                self.cpu_history[pid] = [
+                    (t, c) for t, c in self.cpu_history[pid]
+                    if current_time - t <= self.SUSTAIN_TIME
+                ]
+
+                # Check sustained high CPU
+                if (
+                    len(self.cpu_history[pid]) > 0 and
+                    all(c > expected for _, c in self.cpu_history[pid])
+                ):
+                    sustained_high.add(pid)         
             
+            anomalies = []
+
+            for _, row in top_df.iterrows():
+                pid = row['pid']
+
+                # ---------------- Condition flags ----------------
+
+                # Condition 1: CPU higher than expected
+                expected = self.get_expected_cpu(row['name'])
+                cpu_abnormal = row['cpu_percent'] > expected
+
+                # Condition 2: Sustained high CPU
+                sustained = pid in sustained_high
+
+                # Condition 3: Uptime abnormal vs parent
+                uptime_abnormal = False
+                if row['parent_create_time'] is not None:
+                    proc_uptime = current_time - row['create_time']
+                    parent_uptime = current_time - row['parent_create_time']
+                    if proc_uptime > parent_uptime * 1.5:
+                        uptime_abnormal = True
+
+                # ---------------- K-out-of-N decision ----------------
+
+                matched_conditions = sum([
+                    cpu_abnormal,
+                    sustained,
+                    uptime_abnormal
+                ])
+
+                # Flag anomaly if ANY 2 conditions match
+                if matched_conditions >= 2:
+                    anomalies.append({
+                        'pid': row['pid'],        # 👈 REQUIRED
+                        'name': row['name'],
+                        'desc': (
+                            f"Anomaly detected: "
+                            f"CPU abnormal={cpu_abnormal}, "
+                            f"Sustained CPU={sustained}, "
+                            f"Uptime abnormal={uptime_abnormal}"
+                        ),
+                        'level': 'safe' if matched_conditions == 2 else 'critical'
+                    })
+
             # --- 3. ADD NETWORK DATA COLLECTION ---
             new_net_io = psutil.net_io_counters()
             network_stats = {
@@ -142,16 +248,7 @@ class SystemDataWorker(QObject):
             self.networkInfoUpdated.emit(network_stats)
 
             # --- 4. CHECK FOR ANOMALIES (PLACEHOLDER) ---
-            # This is where your future logic will go.
-            # For now, we send dummy data to test the UI.
-            test_anomalies = [
-                {'name': 'sysmond', 'desc': 'CPU consumption is in unusual range.', 'level': 'safe'},
-                {'name': 'some_app', 'desc': 'CPU consumption is in unusual range.', 'level': 'critical'},
-                {'name': 'another_app', 'desc': 'Unusual memory usage.', 'level': 'safe'},
-            ]
-
-            # EMIT SIGNAL 4 (New)
-            self.anomaliesFound.emit(test_anomalies)
+            self.anomaliesFound.emit(anomalies)
 
         except Exception as e:
             print(f"Monitoring error: {e}")
@@ -165,22 +262,52 @@ class SystemDataWorker(QObject):
         return {'cpu': cpu, 'ram': ram, 'disk': disk}
     
     def get_process_data(self):
-        """Collect CPU usage of all processes (with usernames)."""
+        """Collect CPU usage and lifetime details of all processes."""
         processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'username']):
+
+        for proc in psutil.process_iter([
+            'pid', 'name', 'cpu_percent', 'username', 'ppid', 'create_time'
+        ]):
             try:
-                processes.append(proc.info)
+                info = proc.info
+
+                # Get parent create time safely
+                parent_create_time = None
+                try:
+                    parent = psutil.Process(info['ppid'])
+                    parent_create_time = parent.create_time()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+                processes.append({
+                    'pid': info['pid'],
+                    'name': info['name'],
+                    'cpu_percent': info['cpu_percent'],
+                    'username': info['username'],
+                    'ppid': info['ppid'],
+                    'create_time': info['create_time'],
+                    'parent_create_time': parent_create_time
+                })
+
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        df = pd.DataFrame(processes)
 
-        if not df.empty:
-            max_cpu = df['cpu_percent'].max()
-            if max_cpu > 0:
-                df['relative_cpu_percent'] = (df['cpu_percent'] / max_cpu) * 100
-            else:
-                df['relative_cpu_percent'] = 0
-        return df
+        return pd.DataFrame(processes)
+    
+    @Slot(int)
+    def terminate_process(self, pid):
+        try:
+            proc = psutil.Process(pid)
+            proc.terminate()
+            print(f"Terminated process {pid}")
+        except psutil.NoSuchProcess:
+            print(f"Process {pid} already exited")
+        except psutil.AccessDenied:
+            print(f"Access denied to terminate {pid}")
+        except Exception as e:
+            print(f"Failed to terminate {pid}: {e}")
+
+
 
 
 # ==============================================================================
@@ -446,6 +573,8 @@ class MainWindow(QMainWindow):
         self.worker.systemInfoUpdated.connect(self.update_system_info)
         self.worker.networkInfoUpdated.connect(self.update_network_info)
         self.worker.anomaliesFound.connect(self.update_anomaly_tab)
+        self.worker.killProcess.connect(self.worker.terminate_process)
+
         # Connect thread started signal to worker's start method
         self.thread.started.connect(self.worker.start_monitoring)
         
@@ -839,6 +968,29 @@ class MainWindow(QMainWindow):
                 status_box.setStyleSheet(critical_box_style)
 
             box_layout.addWidget(status_box)
+
+            if anomaly['level'] == 'safe':
+                kill_button = QPushButton("End Task")
+                kill_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #E53935;
+                        color: white;
+                        border-radius: 6px;
+                        padding: 6px;
+                    }
+                    QPushButton:hover {
+                        background-color: #C62828;
+                    }
+                """)
+                kill_button.setFixedWidth(120)
+
+                # Connect button → worker signal
+                kill_button.clicked.connect(
+                    lambda _, pid=anomaly['pid']: self.worker.killProcess.emit(pid)
+                )
+
+                box_layout.addWidget(kill_button)
+            
 
             # Add layouts to card
             card_layout.addLayout(text_layout, 3) # Give text 3/4 of the space
