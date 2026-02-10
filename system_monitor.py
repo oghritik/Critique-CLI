@@ -10,13 +10,14 @@ import matplotlib.patches as mpatches
 from scipy.interpolate import make_interp_spline
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.ticker import FormatStrFormatter
-
+import ai_engine  # Import our new file
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QStackedWidget, QFrame
 )
 from PySide6.QtCore import Qt, QTimer, QThread, QObject, Signal, Slot
 from PySide6.QtGui import QFont, QColor
+from PySide6.QtWidgets import QMessageBox 
 
 # --- Force Matplotlib Backend ---
 # This is the correct backend for PySide6/PyQt
@@ -49,7 +50,84 @@ plt.rcParams.update({
     'savefig.facecolor': 'none',
 })
 
+from PySide6.QtWidgets import QTextEdit, QScrollArea
 
+class ExplanationPanel(QFrame):
+    """A side panel for displaying AI explanations"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #E8E8E8;
+                border-radius: 10px;
+                border: 2px solid #B0B0B0;
+            }
+        """)
+        self.setFixedWidth(280)  # Fixed width for side panel
+        
+        # Layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+        
+        # Title
+        self.title_label = QLabel("AI Process Analysis")
+        self.title_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.title_label.setStyleSheet("color: #000000;")
+        layout.addWidget(self.title_label)
+        
+        # Process name label
+        self.process_label = QLabel("Select a process")
+        self.process_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.process_label.setStyleSheet("color: #333333;")
+        self.process_label.setWordWrap(True)
+        layout.addWidget(self.process_label)
+        
+        # Status label (for "Loading..." etc)
+        self.status_label = QLabel("")
+        self.status_label.setFont(QFont("Arial", 9))
+        self.status_label.setStyleSheet("color: #666666; font-style: italic;")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        
+        # Explanation text area (scrollable)
+        self.text_area = QTextEdit()
+        self.text_area.setReadOnly(True)
+        self.text_area.setStyleSheet("""
+            QTextEdit {
+                background-color: white;
+                border: 1px solid #CCCCCC;
+                border-radius: 5px;
+                padding: 10px;
+                color: #000000;
+                font-size: 10pt;
+            }
+        """)
+        self.text_area.setText("Click on a process in the scatter plot to see AI analysis...")
+        layout.addWidget(self.text_area)
+        
+        # Initially hidden
+        self.hide()
+    
+    def show_loading(self, process_name):
+        """Show loading state"""
+        self.process_label.setText(f"Process: {process_name}")
+        self.status_label.setText("⏳ Analyzing...")
+        self.text_area.setText("Loading AI explanation...\n\nThis may take a few seconds.")
+        self.show()  # Make panel visible
+    
+    def show_explanation(self, process_name, explanation):
+        """Show the AI explanation"""
+        self.process_label.setText(f"Process: {process_name}")
+        self.status_label.setText("✓ Analysis complete")
+        self.text_area.setText(explanation)
+        self.show()  # Ensure panel is visible
+    
+    def show_error(self, error_message):
+        """Show error state"""
+        self.status_label.setText("❌ Error")
+        self.text_area.setText(f"Could not generate explanation:\n\n{error_message}")
+        self.show()
 # ==============================================================================
 # STEP 1: THE DATA WORKER (MOVED TO A QTHREAD)
 # ==============================================================================
@@ -307,6 +385,19 @@ class SystemDataWorker(QObject):
         except Exception as e:
             print(f"Failed to terminate {pid}: {e}")
 
+class AIWorker(QThread):
+    """Runs the AI explanation in the background"""
+    finished = Signal(str)  # Signal to send text back to GUI
+
+    def __init__(self, pid, name):
+        super().__init__()
+        self.pid = pid
+        self.name = name
+
+    def run(self):
+        # This runs in a separate thread
+        explanation = ai_engine.explain_process_by_pid(self.pid, self.name)
+        self.finished.emit(explanation)
 
 
 
@@ -330,6 +421,10 @@ class MainWindow(QMainWindow):
         
         # Set initial view
         self.switch_view(0)
+
+        self.ai_label = QLabel("Click a process in the Scatter Plot to see AI explanation...")
+        self.ai_label.setWordWrap(True) # Allow text to go to next line
+        self.ai_label.setStyleSheet("color: #00ff00; font-size: 14px; padding: 10px; border: 1px solid #333;")
 
     def init_ui(self):
         """Create the main GUI layout."""
@@ -411,18 +506,40 @@ class MainWindow(QMainWindow):
         self.scatter_plot_widget = QWidget()
         scatter_layout = QVBoxLayout(self.scatter_plot_widget)
         scatter_layout.setContentsMargins(20, 5, 20, 5)
-        
+
+        # Create a horizontal layout to hold scatter plot + side panel
+        scatter_main_layout = QHBoxLayout()
+        scatter_layout.addLayout(scatter_main_layout)
+
+        # Left side: Scatter plot frame (takes most space)
         self.scatter_plot_frame = QFrame()
         self.scatter_plot_frame.setStyleSheet("background-color: #F0F0F0; border-radius: 20px;")
-        scatter_layout.addWidget(self.scatter_plot_frame)
-        
+        scatter_main_layout.addWidget(self.scatter_plot_frame, 3)  # 3/4 of the space
+
         scatter_plot_layout = QVBoxLayout(self.scatter_plot_frame)
         scatter_plot_layout.setContentsMargins(15, 15, 15, 15)
 
         self.scatter_fig, self.scatter_ax = plt.subplots()
+
+        self.scatter_fig.patch.set_facecolor('#F0F0F0')  # Match the QFrame background
+        self.scatter_ax.patch.set_facecolor('#F0F0F0')   # Match the QFrame background
+        # This makes the background OPAQUE so clicks register
         self.scatter_canvas = FigureCanvasQTAgg(self.scatter_fig)
         scatter_plot_layout.addWidget(self.scatter_canvas)
         
+        self.pick_cid = self.scatter_canvas.mpl_connect('pick_event', self.on_scatter_pick)
+
+        def test_click(event):
+            print(f"🖱️ CANVAS CLICKED! x={event.xdata}, y={event.ydata}")
+
+        def test_pick(event):
+            print(f"🎯 PICK EVENT FIRED! ind={event.ind}")
+
+        self.scatter_canvas.mpl_connect('button_press_event', test_click)
+        self.scatter_canvas.mpl_connect('pick_event', test_pick)
+        # Right side: Explanation panel (1/4 of space)
+        self.explanation_panel = ExplanationPanel()
+        scatter_main_layout.addWidget(self.explanation_panel, 1)
         self.plot_stack.addWidget(self.scatter_plot_widget)
 
         # --- Page 3: Anomaly List ---
@@ -749,42 +866,37 @@ class MainWindow(QMainWindow):
         self.line_fig.tight_layout(pad=0.5)
         self.line_canvas.draw()
 
-
     @Slot(pd.DataFrame)
     def update_scatter_plot(self, process_df):
-        """
-        This function is now a SLOT. It only runs when the
-        worker sends new process data.
-        """
+        """Updates the scatter plot."""
         
-        # --- Update Scatter Plot (Your logic, moved here) ---
         self.scatter_ax.clear()
         
         if not process_df.empty:
+            # Filter logic (same as before)
             user_cpu_summary = process_df.groupby('username')['cpu_percent'].sum().reset_index()
-            user_threshold = 1.0
-            relevant_users = user_cpu_summary[user_cpu_summary['cpu_percent'] > user_threshold]['username'].tolist()
-
+            relevant_users = user_cpu_summary[user_cpu_summary['cpu_percent'] > 1.0]['username'].tolist()
             filtered_df = process_df[process_df['username'].isin(relevant_users)].copy()
-            
-            process_threshold = 0.5
-            filtered_df = filtered_df[filtered_df['cpu_percent'] >= process_threshold]
+            filtered_df = filtered_df[filtered_df['cpu_percent'] >= 0.5]
 
             if not filtered_df.empty:
+                # 1. CRITICAL: Save the dataframe so clicks map to the right process
                 filtered_df = filtered_df.sort_values(by=['username', 'cpu_percent'], ascending=[True, False]).reset_index(drop=True)
+                self.df = filtered_df 
                 
+                # ... (Color/Size calculation logic - same as before) ...
                 users = filtered_df['username'].unique()
                 x_vals, y_vals, colors, sizes, x_tick_labels, process_names = [], [], [], [], [], []
                 user_colors = ['#E53935', '#43A047', '#1E88E5', '#FF9800', '#9C27B0', '#00BCD4', '#795548', '#607D8B']
                 background_colors = ['#FFEBEE', '#E8F5E8', '#E3F2FD', '#FFF3E0', '#F3E5F5', '#E0F2F1', '#EFEBE9', '#ECEFF1']
-
                 current_x_offset = 0
+
                 for i, user in enumerate(users):
                     user_procs = filtered_df[filtered_df['username'] == user]
                     user_color = user_colors[i % len(user_colors)]
                     bg_color = background_colors[i % len(background_colors)]
-                    user_x_indices = list(range(current_x_offset, current_x_offset + len(user_procs)))
                     
+                    user_x_indices = list(range(current_x_offset, current_x_offset + len(user_procs)))
                     x_vals.extend(user_x_indices)
                     y_vals.extend(user_procs['cpu_percent'].tolist())
                     process_names.extend(user_procs['name'].tolist())
@@ -797,18 +909,23 @@ class MainWindow(QMainWindow):
                     if not user_procs.empty:
                         center_x_pos = current_x_offset + (len(user_procs) - 1) / 2
                         x_tick_labels.append((center_x_pos, user))
-                        
-                        # Add background rectangles
-                        rect = mpatches.Rectangle((current_x_offset - 0.5, 0),
-                                            len(user_procs), 100, # Use 100 for height
-                                            facecolor=bg_color, edgecolor='none', 
-                                            alpha=0.3, zorder=0)
+                        # Background rectangles
+                        rect = mpatches.Rectangle((current_x_offset - 0.5, 0), len(user_procs), 100,
+                                            facecolor=bg_color, edgecolor='none', alpha=0.3, zorder=0)
                         self.scatter_ax.add_patch(rect)
-
                     current_x_offset += len(user_procs) + 1
 
-                self.scatter_ax.scatter(x_vals, y_vals, c=colors, s=sizes, alpha=0.7, edgecolors='white', linewidth=0.5, zorder=2)
-                
+                # 2. DRAW THE DOTS 
+                self.sc = self.scatter_ax.scatter(
+                    x_vals, y_vals, c=colors, s=sizes, alpha=0.7, 
+                    edgecolors='white', linewidth=0.5, zorder=2, picker=True 
+                )
+
+                if hasattr(self, 'pick_cid'):
+                    self.scatter_canvas.mpl_disconnect(self.pick_cid)
+                self.pick_cid = self.scatter_canvas.mpl_connect('pick_event', self.on_scatter_pick)
+
+                # Label Logic
                 for j, (x, y) in enumerate(zip(x_vals, y_vals)):
                     name = process_names[j][:9] + '...' if len(process_names[j]) > 12 else process_names[j]
                     y_offset = 8 if y > 50 else -15
@@ -819,32 +936,19 @@ class MainWindow(QMainWindow):
 
                 max_cpu = max(y_vals) if y_vals else 0
                 self.scatter_ax.set_ylim(0, max(max_cpu * 1.3, 10))
-                
                 tick_positions = [pos for pos, _ in x_tick_labels]
                 tick_labels_text = [label for _, label in x_tick_labels]
                 self.scatter_ax.set_xticks(tick_positions)
                 self.scatter_ax.set_xticklabels(tick_labels_text, rotation=0, ha="center", fontsize=9, color='black')
                 
-                self.scatter_ax.tick_params(axis='y', colors='black')
-                for spine in ['top', 'right']: self.scatter_ax.spines[spine].set_visible(False)
-                self.scatter_ax.spines['bottom'].set_color('black')
-                self.scatter_ax.spines['left'].set_color('black')
-                self.scatter_ax.yaxis.set_major_formatter(FormatStrFormatter('%.1f'))
-                self.scatter_ax.grid(True, alpha=0.3, linestyle='--', color='gray', zorder=1)
-                
-            else:
-                self.scatter_ax.text(0.5, 0.5, 'No significant processes found', 
-                                    transform=self.scatter_ax.transAxes, ha='center', va='center',
-                                    fontsize=12, color='gray', alpha=0.7)
-        else:
-            self.scatter_ax.text(0.5, 0.5, 'Loading process data...', 
-                                transform=self.scatter_ax.transAxes, ha='center', va='center',
-                                fontsize=12, color='gray', alpha=0.7)
-        
-        # Set all plot text/lines to black
+        # Final cleanup
+        self.scatter_ax.tick_params(axis='y', colors='black')
+        for spine in ['top', 'right']: self.scatter_ax.spines[spine].set_visible(False)
+        self.scatter_ax.spines['bottom'].set_color('black')
+        self.scatter_ax.spines['left'].set_color('black')
+        self.scatter_ax.grid(True, alpha=0.3, linestyle='--', color='gray', zorder=1)
         for text in self.scatter_ax.get_xticklabels() + self.scatter_ax.get_yticklabels():
             text.set_color('black')
-        
         self.scatter_fig.tight_layout(pad=0.5)
         self.scatter_canvas.draw()
 
@@ -1002,6 +1106,68 @@ class MainWindow(QMainWindow):
         # Add a final "stretch" to push all cards to the top
         self.anomaly_card_container_layout.addStretch()
 
+    # ==========================================
+    # --- FIXED HELPER FUNCTIONS ---
+    # ==========================================
+
+    def on_scatter_pick(self, event):
+        """Handle clicks on the scatter plot points"""
+        if not hasattr(event, 'ind') or len(event.ind) == 0:
+            return
+    
+        ind = event.ind[0]
+    
+        # Check if we have the dataframe
+        if not hasattr(self, 'df') or self.df is None or self.df.empty:
+            self.explanation_panel.show_error("No process data available")
+            return
+    
+        # Check if index is valid
+        if ind >= len(self.df):
+            self.explanation_panel.show_error(f"Invalid process index")
+            return
+    
+        try:
+            pid = int(self.df.iloc[ind]['pid'])
+            name = str(self.df.iloc[ind]['name'])
+
+            print(f"🤖 Clicked {name} ({pid}). Requesting AI...")
+
+            # IMMEDIATE FEEDBACK: Show loading state right away
+            self.explanation_panel.show_loading(name)
+
+            # Then start the AI processing
+            self.trigger_ai_explanation(pid, name)
+        
+        except Exception as e:
+            print(f"Error picking point: {e}")
+            self.explanation_panel.show_error(str(e))
+
+    def trigger_ai_explanation(self, pid, name):
+        """Start the background worker safely"""
+        # 1. Check if a thread is already running to prevent overlap crashes
+        if hasattr(self, 'ai_thread') and self.ai_thread.isRunning():
+            print("AI is busy, ignoring click.")
+            return
+
+        # 2. Create and start thread
+        self.ai_thread = AIWorker(pid, name)
+        self.ai_thread.finished.connect(self.update_ai_explanation)
+        self.ai_thread.start()
+
+    @Slot(str)
+    def update_ai_explanation(self, text):
+        """Receive the text and update the side panel"""
+        print(f"AI Response received: {text[:100]}...")
+    
+        # Get the process name from the panel
+        process_name = self.explanation_panel.process_label.text().replace("Process: ", "")
+    
+        # Update the panel with the explanation
+        if text and text.strip():
+            self.explanation_panel.show_explanation(process_name, text)
+        else:
+            self.explanation_panel.show_error("No explanation available")
 
 # ==============================================================================
 # --- APPLICATION ENTRY POINT ---
