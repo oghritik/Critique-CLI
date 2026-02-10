@@ -5,6 +5,7 @@ enve/
 .DS_Store/
 .kiro/
 .vscode/
+llm/
 cli/
 cli1/
 __pycache__/
