@@ -49,7 +49,6 @@ def find_in_path(command):
                 return full_path_exe
     return None
 
-# REPLACE IT WITH THIS NEW FUNCTION
 def monitor_system(*args):
     """
     Launches the PySide6 system monitor in a new,
